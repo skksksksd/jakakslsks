@@ -442,8 +442,8 @@ async def process_search(message: types.Message, state: FSMContext):
         return
     
     text = format_profile(user)
-    is_own = (user["user_id"] == message.from_user.id)
-    await message.answer(text, parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=is_own, target_user_id=user["user_id"]))
+    # При поиске всегда показываем кнопку "Репутация", даже для своего профиля
+    await message.answer(text, parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=False, target_user_id=user["user_id"]))
     await state.clear()
 
 @dp.callback_query(lambda call: call.data == "wallet")
@@ -665,7 +665,7 @@ async def my_deals(call: types.CallbackQuery, state: FSMContext):
         
         keyboard.append([InlineKeyboardButton(text=f"Сделка #{deal['deal_id']} — {status_display}", callback_data=f"my_deal_{deal['deal_id']}")])
     
-    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_autogarant", style="primary")])
+    keyboard.append([InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant", style="primary")])
     
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await call.answer()
@@ -704,7 +704,7 @@ async def my_deal_detail(call: types.CallbackQuery, state: FSMContext):
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="my_deals", style="primary")]
+        [InlineKeyboardButton(text="Назад", callback_data="my_deals", style="primary")]
     ])
     
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
@@ -832,7 +832,7 @@ async def confirm_deal(call: types.CallbackQuery, state: FSMContext):
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Мои сделки", callback_data="my_deals", style="primary")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_autogarant", style="primary")]
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant", style="primary")]
     ])
     
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
@@ -1118,11 +1118,11 @@ async def rep_action(call: types.CallbackQuery, state: FSMContext):
     
     await state.update_data(target_user_id=target_user_id, target_username=username)
     
-    text = f"<blockquote>📄 Какую репутацию @{username} вы хотите посмотреть?</blockquote>"
+    text = f"<blockquote>Какую репутацию @{username} вы хотите посмотреть?</blockquote>"
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Все", callback_data=f"rep_type_all_{target_user_id}", style="primary")],
         [InlineKeyboardButton(text="Положительные", callback_data=f"rep_type_positive_{target_user_id}", style="success"), InlineKeyboardButton(text="Отрицательные", callback_data=f"rep_type_negative_{target_user_id}", style="danger")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data=f"back_to_user_profile_{target_user_id}", style="primary")]
+        [InlineKeyboardButton(text="Назад", callback_data=f"back_to_user_profile_{target_user_id}", style="primary")]
     ])
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await call.answer()
