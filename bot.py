@@ -16,6 +16,7 @@ logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost/db")
 CRYPTO_TOKEN = os.getenv("CRYPTO_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -26,6 +27,16 @@ class SearchStates(StatesGroup):
 class WalletStates(StatesGroup):
     waiting_deposit_amount = State()
     waiting_withdraw_amount = State()
+
+class DealStates(StatesGroup):
+    waiting_role = State()
+    waiting_amount = State()
+    waiting_conditions = State()
+    waiting_confirm = State()
+    waiting_partner = State()
+    waiting_accept = State()
+    waiting_payment = State()
+    waiting_complete = State()
 
 async def init_db():
     conn = await asyncpg.connect(DATABASE_URL)
@@ -69,6 +80,19 @@ async def init_db():
         )
     """)
     
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS deals (
+            id SERIAL PRIMARY KEY,
+            deal_id TEXT UNIQUE,
+            buyer_id BIGINT,
+            seller_id BIGINT,
+            amount DECIMAL,
+            conditions TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    
     try:
         await conn.execute("ALTER TABLE users ADD COLUMN virtual_id INT UNIQUE")
     except Exception:
@@ -86,6 +110,9 @@ async def get_conn():
 
 def generate_virtual_id():
     return random.randint(10000, 99999)
+
+def generate_deal_id():
+    return random.randint(1000, 9999)
 
 async def get_or_create_user(user_id: int, username: str):
     conn = await get_conn()
@@ -209,6 +236,51 @@ async def check_pending_invoices():
         except Exception as e:
             logging.error(f"Error in check_pending_invoices: {e}")
 
+async def create_deal(buyer_id: int, seller_id: int, amount: float, conditions: str):
+    conn = await get_conn()
+    deal_id = generate_deal_id()
+    while await conn.fetchval("SELECT 1 FROM deals WHERE deal_id = $1", str(deal_id)):
+        deal_id = generate_deal_id()
+    
+    await conn.execute(
+        "INSERT INTO deals (deal_id, buyer_id, seller_id, amount, conditions, status) VALUES ($1, $2, $3, $4, $5, $6)",
+        str(deal_id), buyer_id, seller_id, amount, conditions, "pending_payment"
+    )
+    await conn.close()
+    return deal_id
+
+async def get_deal(deal_id: str):
+    conn = await get_conn()
+    deal = await conn.fetchrow("SELECT * FROM deals WHERE deal_id = $1", deal_id)
+    await conn.close()
+    return deal
+
+async def update_deal_status(deal_id: str, status: str):
+    conn = await get_conn()
+    await conn.execute("UPDATE deals SET status = $1 WHERE deal_id = $2", status, deal_id)
+    await conn.close()
+
+async def freeze_balance(user_id: int, amount: float):
+    conn = await get_conn()
+    await conn.execute("UPDATE users SET balance = balance - $1 WHERE user_id = $2", amount, user_id)
+    await conn.close()
+
+async def unfreeze_balance_to_seller(deal_id: str):
+    conn = await get_conn()
+    deal = await conn.fetchrow("SELECT seller_id, amount FROM deals WHERE deal_id = $1", deal_id)
+    if deal:
+        await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", float(deal["amount"]), deal["seller_id"])
+        await conn.execute("UPDATE deals SET status = 'completed' WHERE deal_id = $1", deal_id)
+    await conn.close()
+
+async def refund_balance_to_buyer(deal_id: str):
+    conn = await get_conn()
+    deal = await conn.fetchrow("SELECT buyer_id, amount FROM deals WHERE deal_id = $1", deal_id)
+    if deal:
+        await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", float(deal["amount"]), deal["buyer_id"])
+        await conn.execute("UPDATE deals SET status = 'refunded' WHERE deal_id = $1", deal_id)
+    await conn.close()
+
 def format_profile(user):
     user_id = user["user_id"]
     username = user["username"] or str(user_id)
@@ -251,6 +323,22 @@ def get_main_keyboard():
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔑 Профиль", callback_data="profile", style="primary"), InlineKeyboardButton(text="🔍 Поиск", callback_data="search", style="primary")],
         [InlineKeyboardButton(text="🔐 АвтоГарант", callback_data="autogarant", style="success")]
+    ])
+    return keyboard
+
+def get_autogarant_keyboard():
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Кошелек", callback_data="wallet", style="primary")],
+        [InlineKeyboardButton(text="🔍 Мои сделки", callback_data="my_deals", style="primary")],
+        [InlineKeyboardButton(text="⚡️ Создать сделку", callback_data="create_deal", style="success")],
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_menu", style="primary")]
+    ])
+    return keyboard
+
+def get_role_keyboard():
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛒 Покупатель", callback_data="role_buyer", style="success"), InlineKeyboardButton(text="💼 Продавец", callback_data="role_seller", style="danger")],
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant", style="primary")]
     ])
     return keyboard
 
@@ -454,19 +542,477 @@ async def withdraw_amount(message: types.Message, state: FSMContext):
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     await state.clear()
 
-@dp.callback_query(lambda call: call.data == "back_to_profile")
-async def back_to_profile(call: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    user_id = call.from_user.id
-    username = call.from_user.username or str(user_id)
-    user = await get_or_create_user(user_id, username)
-    text = format_profile(user)
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=True))
-    await call.answer()
-
 @dp.callback_query(lambda call: call.data == "autogarant")
 async def autogarant(call: types.CallbackQuery):
-    await call.answer("🔐 АвтоГарант — в разработке", show_alert=True)
+    text = (
+        "<blockquote>🛡 Автосделки\n\n"
+        "Безопасные сделки с гарантией через эскроу.\n"
+        "Без комиссии сервиса.</blockquote>"
+    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_autogarant_keyboard())
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data == "my_deals")
+async def my_deals(call: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    user_id = call.from_user.id
+    conn = await get_conn()
+    deals = await conn.fetch("SELECT * FROM deals WHERE buyer_id = $1 OR seller_id = $1 ORDER BY created_at DESC", user_id)
+    await conn.close()
+    
+    if not deals:
+        await call.answer("📋 У вас нет сделок", show_alert=True)
+        return
+    
+    text = "<blockquote>📋 Ваши сделки</blockquote>"
+    keyboard = []
+    for deal in deals:
+        status_display = {
+            "pending_payment": "⏳ Ожидает оплаты",
+            "paid": "💸 Оплачено, ожидает выполнения",
+            "completed": "✅ Завершена",
+            "refunded": "🔄 Возвращена",
+            "disputed": "⚠️ Спор"
+        }.get(deal["status"], deal["status"])
+        
+        keyboard.append([InlineKeyboardButton(text=f"Сделка #{deal['deal_id']} — {status_display}", callback_data=f"my_deal_{deal['deal_id']}")])
+    
+    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_autogarant", style="primary")])
+    
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data.startswith("my_deal_"))
+async def my_deal_detail(call: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    deal_id = call.data.split("_")[2]
+    deal = await get_deal(deal_id)
+    
+    if not deal:
+        await call.answer("Сделка не найдена", show_alert=True)
+        return
+    
+    buyer = await get_user_by_id(deal["buyer_id"])
+    seller = await get_user_by_id(deal["seller_id"])
+    buyer_username = buyer["username"] if buyer else str(deal["buyer_id"])
+    seller_username = seller["username"] if seller else str(deal["seller_id"])
+    
+    status_display = {
+        "pending_payment": "⏳ Ожидает оплаты",
+        "paid": "💸 Оплачено, ожидает выполнения",
+        "completed": "✅ Завершена",
+        "refunded": "🔄 Возвращена",
+        "disputed": "⚠️ Спор"
+    }.get(deal["status"], deal["status"])
+    
+    text = (
+        f"<blockquote>📋 Сделка #{deal['deal_id']}\n\n"
+        f"👤 Покупатель: @{buyer_username}\n"
+        f"👤 Продавец: @{seller_username}\n"
+        f"💲 Сумма: {float(deal['amount']):.2f} USDT\n"
+        f"📝 Условия:\n{deal['conditions']}\n\n"
+        f"📅 Создана: {deal['created_at'].strftime('%d.%m.%Y %H:%M')}\n"
+        f"📌 Статус: {status_display}</blockquote>"
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="my_deals", style="primary")]
+    ])
+    
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data == "create_deal")
+async def create_deal_start(call: types.CallbackQuery, state: FSMContext):
+    text = (
+        "<blockquote>🛡 Создание сделки\n\n"
+        "Кем вы выступаете?\n\n"
+        "🛒 Покупатель — вы платите и ждёте товар или услугу\n"
+        "💼 Продавец — вы передаёте товар или услугу и ждёте оплату.</blockquote>"
+    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_role_keyboard())
+    await state.set_state(DealStates.waiting_role)
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data.startswith("role_"))
+async def select_role(call: types.CallbackQuery, state: FSMContext):
+    role = call.data.split("_")[1]
+    await state.update_data(role=role)
+    
+    text = (
+        "<blockquote>💲 Введите сумму сделки в USDT\n\n"
+        "Минимум: 1 USDT\n"
+        "Пример: 50 или 12.5</blockquote>"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant", style="primary")]
+    ])
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await state.set_state(DealStates.waiting_amount)
+    await call.answer()
+
+@dp.message(DealStates.waiting_amount)
+async def deal_amount(message: types.Message, state: FSMContext):
+    try:
+        amount = float(message.text.strip())
+        if amount < 1:
+            await message.answer("<blockquote>❌ Минимальная сумма сделки: 1 USDT</blockquote>", parse_mode="HTML")
+            return
+    except ValueError:
+        await message.answer("<blockquote>❌ Введите число. Пример: 50 или 12.5</blockquote>", parse_mode="HTML")
+        return
+    
+    await state.update_data(amount=amount)
+    
+    text = (
+        "<blockquote>📝 Опишите условия сделки\n\n"
+        "Эти условия увидит ваш партнёр. Пишите чётко — в случае спора арбитраж опирается только на них.\n\n"
+        "Можно использовать шаблон:\n"
+        "— Что передаётся\n"
+        "— В какие сроки\n"
+        "— Что считается выполнением\n"
+        "— Что считается нарушением</blockquote>"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_role", style="primary")]
+    ])
+    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+    await state.set_state(DealStates.waiting_conditions)
+    await state.update_data(temp_message_id=message.message_id)
+
+@dp.callback_query(lambda call: call.data == "back_to_role")
+async def back_to_role(call: types.CallbackQuery, state: FSMContext):
+    text = (
+        "<blockquote>🛡 Создание сделки\n\n"
+        "Кем вы выступаете?\n\n"
+        "🛒 Покупатель — вы платите и ждёте товар или услугу\n"
+        "💼 Продавец — вы передаёте товар или услугу и ждёте оплату.</blockquote>"
+    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_role_keyboard())
+    await state.set_state(DealStates.waiting_role)
+    await call.answer()
+
+@dp.message(DealStates.waiting_conditions)
+async def deal_conditions(message: types.Message, state: FSMContext):
+    conditions = message.text
+    
+    data = await state.get_data()
+    role = data.get("role")
+    amount = data.get("amount")
+    
+    role_display = "🛒 Покупатель" if role == "buyer" else "💼 Продавец"
+    
+    text = (
+        f"<blockquote>🏁 Проверьте данные перед созданием\n\n"
+        f"👤 Ваша роль: {role_display}\n"
+        f"💲 Сумма сделки: {amount:.2f} USDT\n"
+        f"💲 Сумма к оплате: {amount:.2f} USDT\n\n"
+        f"📝 Условия:\n{conditions}\n\n"
+        f"После подтверждения изменить данные нельзя.</blockquote>"
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подтвердить", callback_data="confirm_deal", style="success")],
+        [InlineKeyboardButton(text="❌ Отменить", callback_data="back_to_autogarant", style="danger")]
+    ])
+    
+    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+    await state.update_data(conditions=conditions)
+    await state.set_state(DealStates.waiting_confirm)
+
+@dp.callback_query(lambda call: call.data == "confirm_deal")
+async def confirm_deal(call: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    role = data.get("role")
+    amount = data.get("amount")
+    conditions = data.get("conditions")
+    creator_id = call.from_user.id
+    
+    await state.update_data(creator_id=creator_id, amount=amount, conditions=conditions)
+    
+    text = (
+        f"<blockquote>🔗 Приглашение в сделку\n\n"
+        f"Ваша роль: {'💼 Продавец' if role == 'buyer' else '🛒 Покупатель'}\n"
+        f"Сумма: {amount:.2f} USDT\n\n"
+        f"Нажмите кнопку ниже чтобы принять участие.</blockquote>"
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Вступить", callback_data="join_deal", style="success")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_autogarant", style="danger")]
+    ])
+    
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await state.set_state(DealStates.waiting_partner)
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data == "join_deal")
+async def join_deal(call: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    creator_id = data.get("creator_id")
+    role = data.get("role")
+    amount = data.get("amount")
+    conditions = data.get("conditions")
+    joiner_id = call.from_user.id
+    
+    if joiner_id == creator_id:
+        await call.answer("❌ Нельзя присоединиться к своей сделке", show_alert=True)
+        return
+    
+    if role == "buyer":
+        buyer_id = creator_id
+        seller_id = joiner_id
+        buyer_role_display = "🛒 Покупатель"
+        seller_role_display = "💼 Продавец"
+    else:
+        buyer_id = joiner_id
+        seller_id = creator_id
+        buyer_role_display = "🛒 Покупатель"
+        seller_role_display = "💼 Продавец"
+    
+    deal_id = await create_deal(buyer_id, seller_id, amount, conditions)
+    
+    await state.update_data(deal_id=deal_id, buyer_id=buyer_id, seller_id=seller_id)
+    
+    text = (
+        f"<blockquote>📩 Приглашение в сделку #{deal_id}\n\n"
+        f"👤 Ваша роль: {seller_role_display if joiner_id == seller_id else buyer_role_display}\n"
+        f"💲 Сумма: {amount:.2f} USDT\n\n"
+        f"📝 Условия:\n{conditions}</blockquote>"
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Принять сделку", callback_data="accept_deal", style="success")],
+        [InlineKeyboardButton(text="❌ Отклонить сделку", callback_data="back_to_autogarant", style="danger")]
+    ])
+    
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await state.set_state(DealStates.waiting_accept)
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data == "accept_deal")
+async def accept_deal(call: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    deal_id = data.get("deal_id")
+    buyer_id = data.get("buyer_id")
+    seller_id = data.get("seller_id")
+    amount = data.get("amount")
+    conditions = data.get("conditions")
+    
+    await update_deal_status(deal_id, "pending_payment")
+    
+    conn = await get_conn()
+    buyer_balance = await conn.fetchval("SELECT balance FROM users WHERE user_id = $1", buyer_id)
+    await conn.close()
+    buyer_balance = float(buyer_balance) if buyer_balance else 0
+    
+    text = (
+        f"<blockquote>💳 Оплата по сделке #{deal_id}\n\n"
+        f"👤 Ваша роль: 🛒 Покупатель\n"
+        f"💲 Сумма: {amount:.2f} USDT\n\n"
+        f"📝 Условия:\n{conditions}\n\n"
+        f"💸 Ваш баланс: {buyer_balance:.2f} USDT</blockquote>"
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Оплатить", callback_data="pay_deal", style="success")],
+        [InlineKeyboardButton(text="❌ Отменить сделку", callback_data="cancel_deal", style="danger")]
+    ])
+    
+    await bot.send_message(buyer_id, text, parse_mode="HTML", reply_markup=keyboard)
+    
+    await call.message.edit_text(f"<blockquote>✅ Сделка #{deal_id} создана! Ожидайте оплаты от покупателя.</blockquote>", parse_mode="HTML")
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data == "pay_deal")
+async def pay_deal(call: types.CallbackQuery, state: FSMContext):
+    user_id = call.from_user.id
+    
+    conn = await get_conn()
+    deal = await conn.fetchrow("SELECT * FROM deals WHERE buyer_id = $1 AND status = 'pending_payment'", user_id)
+    await conn.close()
+    
+    if not deal:
+        await call.answer("Сделка не найдена", show_alert=True)
+        return
+    
+    amount = float(deal["amount"])
+    
+    conn = await get_conn()
+    balance = await conn.fetchval("SELECT balance FROM users WHERE user_id = $1", user_id)
+    await conn.close()
+    balance = float(balance) if balance else 0
+    
+    if balance < amount:
+        await call.answer("❌ Недостаточно средств", show_alert=True)
+        return
+    
+    await freeze_balance(user_id, amount)
+    await update_deal_status(deal["deal_id"], "paid")
+    
+    seller_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подтвердить выполнение", callback_data=f"confirm_complete_{deal['deal_id']}", style="success")],
+        [InlineKeyboardButton(text="⚠️ Открыть спор", callback_data=f"open_dispute_{deal['deal_id']}", style="danger")]
+    ])
+    
+    await bot.send_message(
+        deal["seller_id"],
+        f"<blockquote>💰 Оплата по сделке #{deal['deal_id']} получена\n\n"
+        f"💸 Сумма: {amount:.2f} USDT заморожена\n\n"
+        f"Приступайте к выполнению условий.</blockquote>",
+        parse_mode="HTML",
+        reply_markup=seller_keyboard
+    )
+    
+    buyer_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚠️ Открыть спор", callback_data=f"open_dispute_{deal['deal_id']}", style="danger")],
+        [InlineKeyboardButton(text="📋 Мои сделки", callback_data="my_deals", style="primary")]
+    ])
+    
+    await call.message.edit_text(
+        f"<blockquote>✅ Оплата по сделке #{deal['deal_id']} подтверждена\n\n"
+        f"💸 Сумма: {amount:.2f} USDT заморожена\n\n"
+        f"Ожидайте выполнения условий от продавца.</blockquote>",
+        parse_mode="HTML",
+        reply_markup=buyer_keyboard
+    )
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data.startswith("confirm_complete_"))
+async def confirm_complete(call: types.CallbackQuery, state: FSMContext):
+    deal_id = call.data.split("_")[2]
+    deal = await get_deal(deal_id)
+    
+    if not deal or deal["status"] != "paid":
+        await call.answer("Сделка не найдена или уже завершена", show_alert=True)
+        return
+    
+    text = (
+        f"<blockquote>📝 Подтвердите выполнение условий сделки #{deal_id}\n\n"
+        f"Убедитесь, что всё сделано. После подтверждения покупатель получит доступ к разблокировке средств.</blockquote>"
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, всё выполнено", callback_data=f"confirm_done_{deal_id}", style="success")],
+        [InlineKeyboardButton(text="❌ Нет, ещё работаю", callback_data="my_deals", style="danger")]
+    ])
+    
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data.startswith("confirm_done_"))
+async def confirm_done(call: types.CallbackQuery, state: FSMContext):
+    deal_id = call.data.split("_")[2]
+    deal = await get_deal(deal_id)
+    
+    if not deal or deal["status"] != "paid":
+        await call.answer("Сделка не найдена или уже завершена", show_alert=True)
+        return
+    
+    buyer_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подтвердить получение", callback_data=f"confirm_receive_{deal_id}", style="success")],
+        [InlineKeyboardButton(text="❌ Открыть спор", callback_data=f"open_dispute_{deal_id}", style="danger")]
+    ])
+    
+    await bot.send_message(
+        deal["buyer_id"],
+        f"<blockquote>✅ Продавец подтвердил выполнение условий сделки #{deal_id}\n\n"
+        f"Проверьте результат. Если всё хорошо — подтвердите получение.</blockquote>",
+        parse_mode="HTML",
+        reply_markup=buyer_keyboard
+    )
+    
+    await call.message.edit_text(f"<blockquote>✅ Вы подтвердили выполнение условий сделки #{deal_id}. Ожидайте подтверждения от покупателя.</blockquote>", parse_mode="HTML")
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data.startswith("confirm_receive_"))
+async def confirm_receive(call: types.CallbackQuery, state: FSMContext):
+    deal_id = call.data.split("_")[2]
+    deal = await get_deal(deal_id)
+    
+    if not deal or deal["status"] != "paid":
+        await call.answer("Сделка не найдена или уже завершена", show_alert=True)
+        return
+    
+    await unfreeze_balance_to_seller(deal_id)
+    
+    await bot.send_message(
+        deal["seller_id"],
+        f"<blockquote>🏁 Сделка #{deal_id} завершена\n\n"
+        f"💸 Сумма: {float(deal['amount']):.2f} USDT разблокирована и переведена вам\n\n"
+        f"Статус: ✅ Завершена</blockquote>",
+        parse_mode="HTML"
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Мои сделки", callback_data="my_deals", style="primary")]
+    ])
+    
+    await call.message.edit_text(
+        f"<blockquote>🏁 Сделка #{deal_id} завершена\n\n"
+        f"💸 Сумма: {float(deal['amount']):.2f} USDT разблокирована и переведена продавцу\n\n"
+        f"Статус: ✅ Завершена</blockquote>",
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data.startswith("open_dispute_"))
+async def open_dispute(call: types.CallbackQuery, state: FSMContext):
+    deal_id = call.data.split("_")[2]
+    deal = await get_deal(deal_id)
+    
+    if not deal:
+        await call.answer("Сделка не найдена", show_alert=True)
+        return
+    
+    await update_deal_status(deal_id, "disputed")
+    
+    buyer = await get_user_by_id(deal["buyer_id"])
+    seller = await get_user_by_id(deal["seller_id"])
+    buyer_username = buyer["username"] if buyer else str(deal["buyer_id"])
+    seller_username = seller["username"] if seller else str(deal["seller_id"])
+    
+    dispute_text = (
+        f"<blockquote>⚠️ Открыт спор по сделке #{deal_id}\n\n"
+        f"👤 Покупатель: @{buyer_username}\n"
+        f"👤 Продавец: @{seller_username}\n"
+        f"💲 Сумма: {float(deal['amount']):.2f} USDT\n\n"
+        f"📝 Условия сделки:\n{deal['conditions']}\n\n"
+        f"Ссылка на профиль покупателя: <a href='tg://user?id={deal['buyer_id']}'>@{buyer_username}</a>\n"
+        f"Ссылка на профиль продавца: <a href='tg://user?id={deal['seller_id']}'>@{seller_username}</a></blockquote>"
+    )
+    
+    dispute_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👤 Связаться с пользователем", url=f"tg://user?id={call.from_user.id}")]
+    ])
+    
+    if ADMIN_ID:
+        await bot.send_message(ADMIN_ID, dispute_text, parse_mode="HTML", reply_markup=dispute_keyboard)
+    else:
+        logging.error("ADMIN_ID not set")
+    
+    await call.message.edit_text(
+        f"<blockquote>⚠️ Спор по сделке #{deal_id} открыт. Администратор скоро свяжется с вами.</blockquote>",
+        parse_mode="HTML"
+    )
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data == "cancel_deal")
+async def cancel_deal(call: types.CallbackQuery):
+    await call.answer("❌ Сделка отменена", show_alert=True)
+    await call.message.delete()
+
+@dp.callback_query(lambda call: call.data == "back_to_autogarant")
+async def back_to_autogarant(call: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    text = (
+        "<blockquote>🛡 Автосделки\n\n"
+        "Безопасные сделки с гарантией через эскроу.\n"
+        "Без комиссии сервиса.</blockquote>"
+    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_autogarant_keyboard())
+    await call.answer()
 
 @dp.callback_query(lambda call: call.data == "back_to_menu")
 async def back_to_menu(call: types.CallbackQuery, state: FSMContext):
@@ -476,6 +1022,16 @@ async def back_to_menu(call: types.CallbackQuery, state: FSMContext):
         "Окунись в мир безопасности. Проверяйте пользователей и проводите сделки.</blockquote>"
     )
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_main_keyboard())
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data == "back_to_profile")
+async def back_to_profile(call: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    user_id = call.from_user.id
+    username = call.from_user.username or str(user_id)
+    user = await get_or_create_user(user_id, username)
+    text = format_profile(user)
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=True))
     await call.answer()
 
 @dp.callback_query(lambda call: call.data.startswith("rep_action_"))
