@@ -310,7 +310,7 @@ async def deposit_amount(message: types.Message, state: FSMContext):
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Оплатить", url=invoice_url, style="secondary")],
+        [InlineKeyboardButton(text="💳 Оплатить", url=invoice_url)],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="wallet", style="danger")]
     ])
     
