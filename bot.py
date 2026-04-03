@@ -1,6 +1,7 @@
 import asyncio
 import os
 import logging
+from datetime import datetime
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -19,28 +20,12 @@ def get_main_keyboard():
     ])
     return keyboard
 
-@dp.message(Command("start"))
-async def start(message: types.Message):
-    text = (
-        "<blockquote>🛡 SHIFT | РЕПУТАЦИЯ — система репутации и доверия.\n\n"
-        "Окунись в мир безопасности. Проверяйте пользователей и проводите сделки.</blockquote>"
-    )
-    await message.answer(text, parse_mode="HTML", reply_markup=get_main_keyboard())
+def get_profile_keyboard():
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_menu")]
+    ])
+    return keyboard
 
-@dp.callback_query(lambda call: call.data == "profile")
-async def profile(call: types.CallbackQuery):
-    await call.answer("🔑 Профиль — в разработке", show_alert=True)
-
-@dp.callback_query(lambda call: call.data == "search")
-async def search(call: types.CallbackQuery):
-    await call.answer("🔍 Поиск — в разработке", show_alert=True)
-
-@dp.callback_query(lambda call: call.data == "autogarant")
-async def autogarant(call: types.CallbackQuery):
-    await call.answer("🔐 АвтоГарант — в разработке", show_alert=True)
-
-async def main():
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+def get_reputation_keyboard(username: str):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Все", callback_data=f"rep_all_{username}"), InlineKeyboardButton(text="Положительные", callback_data=f"rep_positive_{username}"), InlineKeyboardButton(text="О
