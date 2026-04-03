@@ -58,7 +58,8 @@ def get_main_keyboard():
 
 def get_profile_keyboard():
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_menu")]
+        [InlineKeyboardButton(text="💳 Кошелек", callback_data="wallet", style="primary")],
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_menu", style="primary")]
     ])
     return keyboard
 
@@ -90,14 +91,17 @@ async def profile(call: types.CallbackQuery):
     
     text = (
         f"👤 @{username} [ ID: {user_id} ]\n\n"
+        f"<b>Репутация</b>\n"
         f"<blockquote>• <a href='callback://rep_{user_id}'>Репутация</a> {total_reputation}\n"
         f"➕ • {positive_percent:.1f}%\n"
         f"➖ • {negative_percent:.1f}%</blockquote>\n"
-        f"<blockquote>🛟 Депозит: ${float(user['deposit']):.2f} [ ≈ 0 ₽ ]\n"
-        f"💰 Сделки: {user['deals_count']} шт · ${float(user['deals_sum']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
-        f"<blockquote>❗️ ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</blockquote>\n"
-        f"📅 В системе с {registered_date}\n"
-        f"<blockquote>✅ АвтоГарант — @SHIFTrepbot</blockquote>"
+        f"<b>Депозит</b>\n"
+        f"<blockquote>🛟 Депозит: ${float(user['deposit']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
+        f"<b>Сделки</b>\n"
+        f"<blockquote>💰 Сделки: {user['deals_count']} шт · ${float(user['deals_sum']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
+        f"<b>❗️ ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</b>\n\n"
+        f"<b>📅 В системе с {registered_date}</b>\n"
+        f"<b>✅ АвтоГарант — @SHIFTrepbot</b>"
     )
     
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_profile_keyboard())
@@ -110,6 +114,10 @@ async def search(call: types.CallbackQuery):
 @dp.callback_query(lambda call: call.data == "autogarant")
 async def autogarant(call: types.CallbackQuery):
     await call.answer("🔐 АвтоГарант — в разработке", show_alert=True)
+
+@dp.callback_query(lambda call: call.data == "wallet")
+async def wallet(call: types.CallbackQuery):
+    await call.answer("💳 Кошелек — в разработке", show_alert=True)
 
 @dp.callback_query(lambda call: call.data == "back_to_menu")
 async def back_to_menu(call: types.CallbackQuery):
