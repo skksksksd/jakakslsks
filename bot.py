@@ -58,6 +58,17 @@ async def init_db():
         )
     """)
     
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS invoices (
+            id SERIAL PRIMARY KEY,
+            invoice_id TEXT UNIQUE,
+            user_id BIGINT,
+            amount DECIMAL,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    
     try:
         await conn.execute("ALTER TABLE users ADD COLUMN virtual_id INT UNIQUE")
     except Exception:
@@ -109,20 +120,42 @@ async def find_user_by_query(query: str):
     await conn.close()
     return user
 
-async def create_invoice(amount: float):
+async def create_invoice(amount: float, user_id: int):
     url = "https://testnet-pay.crypt.bot/api/createInvoice"
     headers = {"Crypto-Pay-API-Token": CRYPTO_TOKEN}
     data = {
         "asset": "USDT",
         "amount": str(amount),
-        "description": "Пополнение баланса"
+        "description": f"Пополнение баланса пользователя {user_id}"
     }
     
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, json=data) as resp:
             result = await resp.json()
             if result.get("ok"):
-                return result["result"]["pay_url"]
+                invoice_id = str(result["result"]["invoice_id"])
+                pay_url = result["result"]["pay_url"]
+                
+                conn = await get_conn()
+                await conn.execute(
+                    "INSERT INTO invoices (invoice_id, user_id, amount) VALUES ($1, $2, $3)",
+                    invoice_id, user_id, amount
+                )
+                await conn.close()
+                
+                return pay_url, invoice_id
+            return None, None
+
+async def get_invoice_status(invoice_id: str):
+    url = "https://testnet-pay.crypt.bot/api/getInvoices"
+    headers = {"Crypto-Pay-API-Token": CRYPTO_TOKEN}
+    params = {"invoice_ids": invoice_id}
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers, params=params) as resp:
+            result = await resp.json()
+            if result.get("ok") and result.get("result", {}).get("items"):
+                return result["result"]["items"][0].get("status")
             return None
 
 async def create_check(amount: float):
@@ -145,6 +178,36 @@ async def update_balance(user_id: int, amount: float):
     conn = await get_conn()
     await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", amount, user_id)
     await conn.close()
+
+async def mark_invoice_paid(invoice_id: str):
+    conn = await get_conn()
+    await conn.execute("UPDATE invoices SET status = 'paid' WHERE invoice_id = $1", invoice_id)
+    await conn.close()
+
+async def check_pending_invoices():
+    while True:
+        try:
+            await asyncio.sleep(1)
+            
+            conn = await get_conn()
+            pending = await conn.fetch("SELECT * FROM invoices WHERE status = 'pending'")
+            await conn.close()
+            
+            for inv in pending:
+                status = await get_invoice_status(inv["invoice_id"])
+                if status == "paid":
+                    amount_without_fee = inv["amount"] / 1.06
+                    await update_balance(inv["user_id"], amount_without_fee)
+                    await mark_invoice_paid(inv["invoice_id"])
+                    
+                    await bot.send_message(
+                        inv["user_id"],
+                        f"<blockquote>✅ Пополнение на {amount_without_fee:.2f} USDT успешно зачислено!</blockquote>",
+                        parse_mode="HTML"
+                    )
+                    logging.info(f"Invoice {inv['invoice_id']} paid for user {inv['user_id']}")
+        except Exception as e:
+            logging.error(f"Error in check_pending_invoices: {e}")
 
 def format_profile(user):
     user_id = user["user_id"]
@@ -282,6 +345,8 @@ async def deposit_start(call: types.CallbackQuery, state: FSMContext):
 
 @dp.message(WalletStates.waiting_deposit_amount)
 async def deposit_amount(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    
     try:
         amount = float(message.text.strip())
         if amount < 1:
@@ -292,9 +357,8 @@ async def deposit_amount(message: types.Message, state: FSMContext):
         return
     
     amount_with_fee = amount * 1.06
-    amount_without_fee = amount
     
-    invoice_url = await create_invoice(amount_with_fee)
+    invoice_url, invoice_id = await create_invoice(amount_with_fee, user_id)
     
     if not invoice_url:
         await message.answer("<blockquote>❌ Ошибка создания счета. Попробуйте позже.</blockquote>", parse_mode="HTML")
@@ -304,7 +368,7 @@ async def deposit_amount(message: types.Message, state: FSMContext):
     text = (
         f"<blockquote>💳 Счёт создан\n\n"
         f"💲 К оплате: {amount_with_fee:.2f} USDT\n"
-        f"💸 Будет зачислено: {amount_without_fee:.2f} USDT\n"
+        f"💸 Будет зачислено: {amount:.2f} USDT\n"
         f"⌛ Счёт действует 5 минут\n\n"
         f"Нажмите кнопку ниже и оплатите через CryptoBot.</blockquote>"
     )
@@ -596,6 +660,9 @@ async def ignore(call: types.CallbackQuery):
 
 async def main():
     await init_db()
+    
+    asyncio.create_task(check_pending_invoices())
+    
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
