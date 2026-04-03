@@ -87,6 +87,8 @@ async def init_db():
             buyer_id BIGINT DEFAULT 0,
             seller_id BIGINT DEFAULT 0,
             amount DECIMAL,
+            amount_with_fee DECIMAL DEFAULT 0,
+            amount_to_seller DECIMAL DEFAULT 0,
             conditions TEXT,
             status TEXT DEFAULT 'pending_join',
             created_at TIMESTAMP DEFAULT NOW(),
@@ -116,6 +118,16 @@ async def init_db():
     
     try:
         await conn.execute("ALTER TABLE deals ADD COLUMN expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '5 minutes'")
+    except Exception:
+        pass
+    
+    try:
+        await conn.execute("ALTER TABLE deals ADD COLUMN amount_with_fee DECIMAL DEFAULT 0")
+    except Exception:
+        pass
+    
+    try:
+        await conn.execute("ALTER TABLE deals ADD COLUMN amount_to_seller DECIMAL DEFAULT 0")
     except Exception:
         pass
     
@@ -308,9 +320,12 @@ async def create_deal(creator_id: int, creator_role: str, amount: float, conditi
     while await conn.fetchval("SELECT 1 FROM deals WHERE deal_id = $1", str(deal_id)):
         deal_id = generate_deal_id()
     
+    amount_with_fee = amount * 1.06
+    amount_to_seller = amount * 0.94
+    
     await conn.execute(
-        "INSERT INTO deals (deal_id, creator_id, creator_role, amount, conditions, status, expires_at) VALUES ($1, $2, $3, $4, $5, $6, NOW() + INTERVAL '5 minutes')",
-        str(deal_id), creator_id, creator_role, amount, conditions, "pending_join"
+        "INSERT INTO deals (deal_id, creator_id, creator_role, amount, amount_with_fee, amount_to_seller, conditions, status, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW() + INTERVAL '5 minutes')",
+        str(deal_id), creator_id, creator_role, amount, amount_with_fee, amount_to_seller, conditions, "pending_join"
     )
     await conn.close()
     return deal_id
@@ -341,9 +356,9 @@ async def freeze_balance(user_id: int, amount: float):
 
 async def unfreeze_balance_to_seller(deal_id: str):
     conn = await get_conn()
-    deal = await conn.fetchrow("SELECT seller_id, amount FROM deals WHERE deal_id = $1", deal_id)
+    deal = await conn.fetchrow("SELECT seller_id, amount_to_seller FROM deals WHERE deal_id = $1", deal_id)
     if deal:
-        await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", float(deal["amount"]), deal["seller_id"])
+        await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", float(deal["amount_to_seller"]), deal["seller_id"])
         await conn.execute("UPDATE deals SET status = 'completed' WHERE deal_id = $1", deal_id)
     await conn.close()
 
@@ -443,7 +458,7 @@ async def deal_start(message: types.Message, state: FSMContext, deal_id: str):
         await message.answer("<blockquote>❌ Вы не можете присоединиться к своей сделке\n\n• Отправьте ссылку партнёру</blockquote>", parse_mode="HTML")
         return
     
-    await state.update_data(deal_id=deal_id, amount=deal["amount"], conditions=deal["conditions"], creator_role=deal["creator_role"])
+    await state.update_data(deal_id=deal_id, amount=deal["amount"], amount_with_fee=deal["amount_with_fee"], conditions=deal["conditions"], creator_role=deal["creator_role"])
     
     your_role = "Продавец" if deal["creator_role"] == "buyer" else "Покупатель"
     
@@ -514,7 +529,7 @@ async def wallet(call: types.CallbackQuery):
     text = (
         f"<blockquote>💸 КОШЕЛЁК\n\n"
         f"• Баланс: {balance:.2f} USDT\n\n"
-        f"• Пополнение: от 1 USDT, комиссия 6%\n"
+        f"• Пополнение: от 1 USDT, комиссия 6% (3% CryptoBot + 3% сервис)\n"
         f"• Вывод: от 1 USDT, комиссия 0%\n\n"
         f"Выберите действие:</blockquote>"
     )
@@ -539,7 +554,7 @@ async def wallet_autogarant(call: types.CallbackQuery):
     text = (
         f"<blockquote>💸 КОШЕЛЁК\n\n"
         f"• Баланс: {balance:.2f} USDT\n\n"
-        f"• Пополнение: от 1 USDT, комиссия 6%\n"
+        f"• Пополнение: от 1 USDT, комиссия 6% (3% CryptoBot + 3% сервис)\n"
         f"• Вывод: от 1 USDT, комиссия 0%\n\n"
         f"Выберите действие:</blockquote>"
     )
@@ -558,7 +573,7 @@ async def deposit_start(call: types.CallbackQuery, state: FSMContext):
         "<blockquote>➕ ПОПОЛНЕНИЕ БАЛАНСА\n\n"
         "• Введите сумму в USDT\n"
         "• Минимум: 1 USDT\n"
-        "• Комиссия: 6% (списывается при зачислении)\n\n"
+        "• Комиссия: 6% (3% CryptoBot + 3% сервис)\n\n"
         "Пример: 5 или 50</blockquote>"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -687,7 +702,7 @@ async def autogarant(call: types.CallbackQuery):
         "• Безопасные сделки с гарантией\n"
         "• Средства замораживаются на эскроу\n"
         "• Споры решаются через арбитра\n"
-        "• Комиссия сервиса: 0%\n\n"
+        "• Комиссия сервиса: 6% (3% CryptoBot + 3% сервис)\n\n"
         "Выберите действие:</blockquote>"
     )
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_autogarant_keyboard())
@@ -788,7 +803,8 @@ async def my_deal_detail(call: types.CallbackQuery, state: FSMContext):
         f"<blockquote>📋 СДЕЛКА #{deal['deal_id']}\n\n"
         f"• Покупатель: @{buyer_username}\n"
         f"• Продавец: @{seller_username}\n"
-        f"• Сумма: {float(deal['amount']):.2f} USDT\n\n"
+        f"• Сумма: {float(deal['amount']):.2f} USDT\n"
+        f"• Комиссия: 6% (3% CryptoBot + 3% сервис)\n\n"
         f"📝 УСЛОВИЯ:\n{deal['conditions']}\n\n"
         f"• Создана: {deal['created_at'].strftime('%d.%m.%Y %H:%M')}\n"
         f"• Статус: {status_display}</blockquote>"
@@ -807,7 +823,8 @@ async def create_deal_start(call: types.CallbackQuery, state: FSMContext):
         "<blockquote>🛡 СОЗДАНИЕ СДЕЛКИ\n\n"
         "Кем вы выступаете?\n\n"
         "🛒 Покупатель — вы платите и ждёте товар или услугу\n"
-        "💼 Продавец — вы передаёте товар или услугу и ждёте оплату</blockquote>"
+        "💼 Продавец — вы передаёте товар или услугу и ждёте оплату\n\n"
+        "Комиссия сервиса: 6% (3% CryptoBot + 3% сервис)</blockquote>"
     )
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_role_keyboard())
     await state.set_state(DealStates.waiting_role)
@@ -821,7 +838,7 @@ async def select_role(call: types.CallbackQuery, state: FSMContext):
     text = (
         "<blockquote>💲 ВВЕДИТЕ СУММУ СДЕЛКИ\n\n"
         "• Минимум: 1 USDT\n"
-        "• Комиссия сервиса: 0%\n"
+        "• Комиссия сервиса: 6% (3% CryptoBot + 3% сервис)\n"
         "• Средства замораживаются до подтверждения\n\n"
         "Пример: 50 или 12.5</blockquote>"
     )
@@ -866,7 +883,8 @@ async def back_to_role(call: types.CallbackQuery, state: FSMContext):
         "<blockquote>🛡 СОЗДАНИЕ СДЕЛКИ\n\n"
         "Кем вы выступаете?\n\n"
         "🛒 Покупатель — вы платите и ждёте товар или услугу\n"
-        "💼 Продавец — вы передаёте товар или услугу и ждёте оплату</blockquote>"
+        "💼 Продавец — вы передаёте товар или услугу и ждёте оплату\n\n"
+        "Комиссия сервиса: 6% (3% CryptoBot + 3% сервис)</blockquote>"
     )
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_role_keyboard())
     await state.set_state(DealStates.waiting_role)
@@ -885,7 +903,8 @@ async def deal_conditions(message: types.Message, state: FSMContext):
     text = (
         f"<blockquote>🏁 ПРОВЕРЬТЕ ДАННЫЕ\n\n"
         f"• Ваша роль: {role_display}\n"
-        f"• Сумма сделки: {amount:.2f} USDT\n\n"
+        f"• Сумма сделки: {amount:.2f} USDT\n"
+        f"• Комиссия: 6% (3% CryptoBot + 3% сервис)\n\n"
         f"📝 УСЛОВИЯ:\n{conditions}\n\n"
         f"После подтверждения изменить данные нельзя.</blockquote>"
     )
@@ -915,7 +934,8 @@ async def confirm_deal(call: types.CallbackQuery, state: FSMContext):
     text = (
         f"<blockquote>🔗 ПРИГЛАШЕНИЕ В СДЕЛКУ #{deal_id}\n\n"
         f"• Ваша роль: {'Продавец' if role == 'buyer' else 'Покупатель'}\n"
-        f"• Сумма: {amount:.2f} USDT\n\n"
+        f"• Сумма: {amount:.2f} USDT\n"
+        f"• Комиссия: 6% (3% CryptoBot + 3% сервис)\n\n"
         f"Отправьте эту ссылку партнёру:\n"
         f"<code>{invite_link}</code>\n\n"
         f"Ссылка действительна 5 минут.\n\n"
@@ -936,6 +956,7 @@ async def accept_deal(call: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     deal_id = data.get("deal_id")
     amount = data.get("amount")
+    amount_with_fee = data.get("amount_with_fee")
     conditions = data.get("conditions")
     creator_role = data.get("creator_role")
     joiner_id = call.from_user.id
@@ -955,7 +976,7 @@ async def accept_deal(call: types.CallbackQuery, state: FSMContext):
     
     await update_deal(deal_id, buyer_id, seller_id, "pending_payment")
     
-    invoice_url, invoice_id = await create_invoice(amount, buyer_id)
+    invoice_url, invoice_id = await create_invoice(amount_with_fee, buyer_id)
     
     conn = await get_conn()
     buyer_balance = await conn.fetchval("SELECT balance FROM users WHERE user_id = $1", buyer_id)
@@ -965,7 +986,8 @@ async def accept_deal(call: types.CallbackQuery, state: FSMContext):
     text = (
         f"<blockquote>💳 ОПЛАТА ПО СДЕЛКЕ #{deal_id}\n\n"
         f"• Ваша роль: Покупатель\n"
-        f"• Сумма: {amount:.2f} USDT\n\n"
+        f"• Сумма сделки: {amount:.2f} USDT\n"
+        f"• К оплате с комиссией 6%: {amount_with_fee:.2f} USDT\n\n"
         f"📝 УСЛОВИЯ:\n{conditions}\n\n"
         f"• Ваш баланс: {buyer_balance:.2f} USDT\n\n"
         f"Счёт действителен 5 минут.\n\n"
@@ -987,7 +1009,6 @@ async def accept_deal(call: types.CallbackQuery, state: FSMContext):
 async def reject_deal(call: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     deal_id = data.get("deal_id")
-    creator_role = data.get("creator_role")
     
     deal = await get_deal(deal_id)
     
@@ -1020,6 +1041,7 @@ async def pay_balance(call: types.CallbackQuery):
     
     buyer_id = call.from_user.id
     amount = float(deal["amount"])
+    amount_to_seller = float(deal["amount_to_seller"])
     
     conn = await get_conn()
     balance = await conn.fetchval("SELECT balance FROM users WHERE user_id = $1", buyer_id)
@@ -1041,7 +1063,8 @@ async def pay_balance(call: types.CallbackQuery):
     await bot.send_message(
         deal["seller_id"],
         f"<blockquote>💰 ОПЛАТА ПОЛУЧЕНА #{deal_id}\n\n"
-        f"• Сумма: {amount:.2f} USDT заморожена\n\n"
+        f"• Сумма сделки: {amount:.2f} USDT\n"
+        f"• Продавцу поступит: {amount_to_seller:.2f} USDT (комиссия 6% удержана)\n\n"
         f"Приступайте к выполнению условий.</blockquote>",
         parse_mode="HTML",
         reply_markup=seller_keyboard
@@ -1134,11 +1157,13 @@ async def confirm_receive(call: types.CallbackQuery):
     
     await unfreeze_balance_to_seller(deal_id)
     
+    amount_to_seller = float(deal["amount_to_seller"])
+    
     await bot.send_message(
         deal["seller_id"],
         f"<blockquote>🏁 СДЕЛКА #{deal_id} ЗАВЕРШЕНА\n\n"
-        f"• Сумма: {float(deal['amount']):.2f} USDT разблокирована\n"
-        f"• Средства переведены вам\n\n"
+        f"• Сумма: {amount_to_seller:.2f} USDT разблокирована и переведена вам\n"
+        f"• Комиссия сервиса: {float(deal['amount']) - amount_to_seller:.2f} USDT\n\n"
         f"Статус: ✅ Завершена</blockquote>",
         parse_mode="HTML"
     )
@@ -1149,8 +1174,9 @@ async def confirm_receive(call: types.CallbackQuery):
     
     await call.message.edit_text(
         f"<blockquote>🏁 СДЕЛКА #{deal_id} ЗАВЕРШЕНА\n\n"
-        f"• Сумма: {float(deal['amount']):.2f} USDT разблокирована\n"
-        f"• Средства переведены продавцу\n\n"
+        f"• Сумма: {float(deal['amount']):.2f} USDT заморожена\n"
+        f"• Продавцу переведено: {amount_to_seller:.2f} USDT\n"
+        f"• Комиссия сервиса: {float(deal['amount']) - amount_to_seller:.2f} USDT\n\n"
         f"Статус: ✅ Завершена</blockquote>",
         parse_mode="HTML",
         reply_markup=keyboard
@@ -1208,7 +1234,7 @@ async def back_to_autogarant(call: types.CallbackQuery, state: FSMContext):
         "• Безопасные сделки с гарантией\n"
         "• Средства замораживаются на эскроу\n"
         "• Споры решаются через арбитра\n"
-        "• Комиссия сервиса: 0%\n\n"
+        "• Комиссия сервиса: 6% (3% CryptoBot + 3% сервис)\n\n"
         "Выберите действие:</blockquote>"
     )
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_autogarant_keyboard())
