@@ -49,7 +49,9 @@ def generate_virtual_id():
 
 async def get_or_create_user(user_id: int, username: str):
     conn = await get_conn()
+    
     user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
+    
     if not user:
         virtual_id = generate_virtual_id()
         while await conn.fetchval("SELECT 1 FROM users WHERE virtual_id = $1", virtual_id):
@@ -59,12 +61,7 @@ async def get_or_create_user(user_id: int, username: str):
             user_id, virtual_id, username
         )
         user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
-    elif user["virtual_id"] is None:
-        virtual_id = generate_virtual_id()
-        while await conn.fetchval("SELECT 1 FROM users WHERE virtual_id = $1", virtual_id):
-            virtual_id = generate_virtual_id()
-        await conn.execute("UPDATE users SET virtual_id = $1 WHERE user_id = $2", virtual_id, user_id)
-        user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
+    
     await conn.close()
     return user
 
