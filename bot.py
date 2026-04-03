@@ -33,10 +33,7 @@ class DealStates(StatesGroup):
     waiting_amount = State()
     waiting_conditions = State()
     waiting_confirm = State()
-    waiting_partner = State()
     waiting_accept = State()
-    waiting_payment = State()
-    waiting_complete = State()
 
 async def init_db():
     conn = await asyncpg.connect(DATABASE_URL)
@@ -84,11 +81,11 @@ async def init_db():
         CREATE TABLE IF NOT EXISTS deals (
             id SERIAL PRIMARY KEY,
             deal_id TEXT UNIQUE,
-            buyer_id BIGINT,
-            seller_id BIGINT,
+            buyer_id BIGINT DEFAULT 0,
+            seller_id BIGINT DEFAULT 0,
             amount DECIMAL,
             conditions TEXT,
-            status TEXT DEFAULT 'pending',
+            status TEXT DEFAULT 'pending_join',
             created_at TIMESTAMP DEFAULT NOW()
         )
     """)
@@ -236,15 +233,15 @@ async def check_pending_invoices():
         except Exception as e:
             logging.error(f"Error in check_pending_invoices: {e}")
 
-async def create_deal(buyer_id: int, seller_id: int, amount: float, conditions: str):
+async def create_deal(amount: float, conditions: str):
     conn = await get_conn()
     deal_id = generate_deal_id()
     while await conn.fetchval("SELECT 1 FROM deals WHERE deal_id = $1", str(deal_id)):
         deal_id = generate_deal_id()
     
     await conn.execute(
-        "INSERT INTO deals (deal_id, buyer_id, seller_id, amount, conditions, status) VALUES ($1, $2, $3, $4, $5, $6)",
-        str(deal_id), buyer_id, seller_id, amount, conditions, "pending_payment"
+        "INSERT INTO deals (deal_id, amount, conditions, status) VALUES ($1, $2, $3, $4)",
+        str(deal_id), amount, conditions, "pending_join"
     )
     await conn.close()
     return deal_id
@@ -254,6 +251,14 @@ async def get_deal(deal_id: str):
     deal = await conn.fetchrow("SELECT * FROM deals WHERE deal_id = $1", deal_id)
     await conn.close()
     return deal
+
+async def update_deal(deal_id: str, buyer_id: int, seller_id: int, status: str):
+    conn = await get_conn()
+    await conn.execute(
+        "UPDATE deals SET buyer_id = $1, seller_id = $2, status = $3 WHERE deal_id = $4",
+        buyer_id, seller_id, status, deal_id
+    )
+    await conn.close()
 
 async def update_deal_status(deal_id: str, status: str):
     conn = await get_conn()
@@ -271,14 +276,6 @@ async def unfreeze_balance_to_seller(deal_id: str):
     if deal:
         await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", float(deal["amount"]), deal["seller_id"])
         await conn.execute("UPDATE deals SET status = 'completed' WHERE deal_id = $1", deal_id)
-    await conn.close()
-
-async def refund_balance_to_buyer(deal_id: str):
-    conn = await get_conn()
-    deal = await conn.fetchrow("SELECT buyer_id, amount FROM deals WHERE deal_id = $1", deal_id)
-    if deal:
-        await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", float(deal["amount"]), deal["buyer_id"])
-        await conn.execute("UPDATE deals SET status = 'refunded' WHERE deal_id = $1", deal_id)
     await conn.close()
 
 def format_profile(user):
@@ -328,9 +325,8 @@ def get_main_keyboard():
 
 def get_autogarant_keyboard():
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Кошелек", callback_data="wallet", style="primary")],
-        [InlineKeyboardButton(text="🔍 Мои сделки", callback_data="my_deals", style="primary")],
         [InlineKeyboardButton(text="⚡️ Создать сделку", callback_data="create_deal", style="success")],
+        [InlineKeyboardButton(text="💳 Кошелек", callback_data="wallet_autogarant", style="primary"), InlineKeyboardButton(text="🔍 Мои сделки", callback_data="my_deals", style="primary")],
         [InlineKeyboardButton(text="Назад", callback_data="back_to_menu", style="primary")]
     ])
     return keyboard
@@ -354,6 +350,39 @@ async def start(message: types.Message):
         "Окунись в мир безопасности. Проверяйте пользователей и проводите сделки.</blockquote>"
     )
     await message.answer(text, parse_mode="HTML", reply_markup=get_main_keyboard())
+
+@dp.message(Command("deal"))
+async def deal_start(message: types.Message, state: FSMContext):
+    args = message.text.split()
+    if len(args) != 2:
+        return
+    
+    deal_id = args[1]
+    deal = await get_deal(deal_id)
+    
+    if not deal or deal["status"] != "pending_join":
+        await message.answer("<blockquote>❌ Сделка не найдена или уже завершена</blockquote>", parse_mode="HTML")
+        return
+    
+    user_id = message.from_user.id
+    username = message.from_user.username or str(user_id)
+    
+    await state.update_data(deal_id=deal_id, amount=deal["amount"], conditions=deal["conditions"])
+    
+    text = (
+        f"<blockquote>📩 Приглашение в сделку #{deal_id}\n\n"
+        f"👤 Ваша роль: {'💼 Продавец' if deal['buyer_id'] == 0 else '🛒 Покупатель'}\n"
+        f"💲 Сумма: {float(deal['amount']):.2f} USDT\n\n"
+        f"📝 Условия:\n{deal['conditions']}</blockquote>"
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Принять сделку", callback_data="accept_deal", style="success")],
+        [InlineKeyboardButton(text="❌ Отклонить", callback_data="back_to_menu", style="danger")]
+    ])
+    
+    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+    await state.set_state(DealStates.waiting_accept)
 
 @dp.callback_query(lambda call: call.data == "profile")
 async def profile(call: types.CallbackQuery):
@@ -411,6 +440,30 @@ async def wallet(call: types.CallbackQuery):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Пополнить", callback_data="deposit", style="success"), InlineKeyboardButton(text="➖ Вывести", callback_data="withdraw", style="danger")],
         [InlineKeyboardButton(text="Назад", callback_data="back_to_profile", style="primary")]
+    ])
+    
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data == "wallet_autogarant")
+async def wallet_autogarant(call: types.CallbackQuery):
+    user_id = call.from_user.id
+    conn = await get_conn()
+    balance = await conn.fetchval("SELECT balance FROM users WHERE user_id = $1", user_id)
+    await conn.close()
+    
+    balance = float(balance) if balance else 0
+    
+    text = (
+        f"<blockquote>💸 Кошелёк\n\n"
+        f"💲 Баланс: {balance:.2f} USDT\n\n"
+        f"➕ Пополнение — от 1 USDT · комиссия 6%\n"
+        f"➖ Вывод — от 1 USDT · комиссия 0%</blockquote>"
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Пополнить", callback_data="deposit", style="success"), InlineKeyboardButton(text="➖ Вывести", callback_data="withdraw", style="danger")],
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant", style="primary")]
     ])
     
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
@@ -557,7 +610,10 @@ async def my_deals(call: types.CallbackQuery, state: FSMContext):
     await state.clear()
     user_id = call.from_user.id
     conn = await get_conn()
-    deals = await conn.fetch("SELECT * FROM deals WHERE buyer_id = $1 OR seller_id = $1 ORDER BY created_at DESC", user_id)
+    deals = await conn.fetch(
+        "SELECT * FROM deals WHERE buyer_id = $1 OR seller_id = $1 ORDER BY created_at DESC",
+        user_id
+    )
     await conn.close()
     
     if not deals:
@@ -678,7 +734,6 @@ async def deal_amount(message: types.Message, state: FSMContext):
     ])
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     await state.set_state(DealStates.waiting_conditions)
-    await state.update_data(temp_message_id=message.message_id)
 
 @dp.callback_query(lambda call: call.data == "back_to_role")
 async def back_to_role(call: types.CallbackQuery, state: FSMContext):
@@ -728,78 +783,56 @@ async def confirm_deal(call: types.CallbackQuery, state: FSMContext):
     conditions = data.get("conditions")
     creator_id = call.from_user.id
     
-    await state.update_data(creator_id=creator_id, amount=amount, conditions=conditions)
+    deal_id = await create_deal(amount, conditions)
+    
+    bot_username = (await bot.get_me()).username
+    invite_link = f"https://t.me/{bot_username}?start=deal_{deal_id}"
     
     text = (
-        f"<blockquote>🔗 Приглашение в сделку\n\n"
+        f"<blockquote>🔗 Приглашение в сделку #{deal_id}\n\n"
         f"Ваша роль: {'💼 Продавец' if role == 'buyer' else '🛒 Покупатель'}\n"
         f"Сумма: {amount:.2f} USDT\n\n"
-        f"Нажмите кнопку ниже чтобы принять участие.</blockquote>"
+        f"Отправьте эту ссылку партнёру для вступления:\n"
+        f"<code>{invite_link}</code></blockquote>"
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Вступить", callback_data="join_deal", style="success")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_autogarant", style="danger")]
+        [InlineKeyboardButton(text="📋 Мои сделки", callback_data="my_deals", style="primary")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_autogarant", style="primary")]
     ])
     
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
-    await state.set_state(DealStates.waiting_partner)
-    await call.answer()
-
-@dp.callback_query(lambda call: call.data == "join_deal")
-async def join_deal(call: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    creator_id = data.get("creator_id")
-    role = data.get("role")
-    amount = data.get("amount")
-    conditions = data.get("conditions")
-    joiner_id = call.from_user.id
-    
-    if joiner_id == creator_id:
-        await call.answer("❌ Нельзя присоединиться к своей сделке", show_alert=True)
-        return
-    
-    if role == "buyer":
-        buyer_id = creator_id
-        seller_id = joiner_id
-        buyer_role_display = "🛒 Покупатель"
-        seller_role_display = "💼 Продавец"
-    else:
-        buyer_id = joiner_id
-        seller_id = creator_id
-        buyer_role_display = "🛒 Покупатель"
-        seller_role_display = "💼 Продавец"
-    
-    deal_id = await create_deal(buyer_id, seller_id, amount, conditions)
-    
-    await state.update_data(deal_id=deal_id, buyer_id=buyer_id, seller_id=seller_id)
-    
-    text = (
-        f"<blockquote>📩 Приглашение в сделку #{deal_id}\n\n"
-        f"👤 Ваша роль: {seller_role_display if joiner_id == seller_id else buyer_role_display}\n"
-        f"💲 Сумма: {amount:.2f} USDT\n\n"
-        f"📝 Условия:\n{conditions}</blockquote>"
-    )
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Принять сделку", callback_data="accept_deal", style="success")],
-        [InlineKeyboardButton(text="❌ Отклонить сделку", callback_data="back_to_autogarant", style="danger")]
-    ])
-    
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
-    await state.set_state(DealStates.waiting_accept)
+    await state.clear()
     await call.answer()
 
 @dp.callback_query(lambda call: call.data == "accept_deal")
 async def accept_deal(call: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     deal_id = data.get("deal_id")
-    buyer_id = data.get("buyer_id")
-    seller_id = data.get("seller_id")
     amount = data.get("amount")
     conditions = data.get("conditions")
+    joiner_id = call.from_user.id
     
-    await update_deal_status(deal_id, "pending_payment")
+    deal = await get_deal(deal_id)
+    
+    if not deal or deal["status"] != "pending_join":
+        await call.answer("Сделка не найдена или уже принята", show_alert=True)
+        return
+    
+    if deal["buyer_id"] == 0:
+        buyer_id = joiner_id
+        seller_id = deal.get("seller_id", 0)
+        if seller_id == 0:
+            seller_id = 0
+    else:
+        buyer_id = deal["buyer_id"]
+        seller_id = joiner_id
+    
+    if buyer_id == 0 or seller_id == 0:
+        await call.answer("Ожидайте создания сделки создателем", show_alert=True)
+        return
+    
+    await update_deal(deal_id, buyer_id, seller_id, "pending_payment")
     
     conn = await get_conn()
     buyer_balance = await conn.fetchval("SELECT balance FROM users WHERE user_id = $1", buyer_id)
@@ -821,11 +854,12 @@ async def accept_deal(call: types.CallbackQuery, state: FSMContext):
     
     await bot.send_message(buyer_id, text, parse_mode="HTML", reply_markup=keyboard)
     
-    await call.message.edit_text(f"<blockquote>✅ Сделка #{deal_id} создана! Ожидайте оплаты от покупателя.</blockquote>", parse_mode="HTML")
+    await call.message.edit_text(f"<blockquote>✅ Вы приняли сделку #{deal_id}. Ожидайте оплаты от покупателя.</blockquote>", parse_mode="HTML")
+    await state.clear()
     await call.answer()
 
 @dp.callback_query(lambda call: call.data == "pay_deal")
-async def pay_deal(call: types.CallbackQuery, state: FSMContext):
+async def pay_deal(call: types.CallbackQuery):
     user_id = call.from_user.id
     
     conn = await get_conn()
@@ -879,7 +913,7 @@ async def pay_deal(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
 
 @dp.callback_query(lambda call: call.data.startswith("confirm_complete_"))
-async def confirm_complete(call: types.CallbackQuery, state: FSMContext):
+async def confirm_complete(call: types.CallbackQuery):
     deal_id = call.data.split("_")[2]
     deal = await get_deal(deal_id)
     
@@ -901,7 +935,7 @@ async def confirm_complete(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
 
 @dp.callback_query(lambda call: call.data.startswith("confirm_done_"))
-async def confirm_done(call: types.CallbackQuery, state: FSMContext):
+async def confirm_done(call: types.CallbackQuery):
     deal_id = call.data.split("_")[2]
     deal = await get_deal(deal_id)
     
@@ -926,7 +960,7 @@ async def confirm_done(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
 
 @dp.callback_query(lambda call: call.data.startswith("confirm_receive_"))
-async def confirm_receive(call: types.CallbackQuery, state: FSMContext):
+async def confirm_receive(call: types.CallbackQuery):
     deal_id = call.data.split("_")[2]
     deal = await get_deal(deal_id)
     
@@ -958,7 +992,7 @@ async def confirm_receive(call: types.CallbackQuery, state: FSMContext):
     await call.answer()
 
 @dp.callback_query(lambda call: call.data.startswith("open_dispute_"))
-async def open_dispute(call: types.CallbackQuery, state: FSMContext):
+async def open_dispute(call: types.CallbackQuery):
     deal_id = call.data.split("_")[2]
     deal = await get_deal(deal_id)
     
