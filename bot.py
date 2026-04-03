@@ -88,20 +88,20 @@ async def profile(call: types.CallbackQuery):
     negative_percent = (user["reputation_negative"] / total_reputation * 100) if total_reputation > 0 else 0
     
     registered_date = user["registered_at"].strftime("%d %B %Y года")
+    registered_date_ru = registered_date.replace("January", "января").replace("February", "февраля").replace("March", "марта").replace("April", "апреля").replace("May", "мая").replace("June", "июня").replace("July", "июля").replace("August", "августа").replace("September", "сентября").replace("October", "октября").replace("November", "ноября").replace("December", "декабря")
     
     text = (
         f"👤 @{username} [ ID: {user_id} ]\n\n"
-        f"<b>Репутация</b>\n"
         f"<blockquote>• <a href='callback://rep_{user_id}'>Репутация</a> {total_reputation}\n"
         f"➕ • {positive_percent:.1f}%\n"
         f"➖ • {negative_percent:.1f}%</blockquote>\n"
-        f"<b>Депозит</b>\n"
-        f"<blockquote>🛟 {float(user['deposit']):.2f}$ [ ≈ 0 ₽ ]</blockquote>\n"
-        f"<b>Сделки</b>\n"
-        f"<blockquote>💰 {user['deals_count']} шт · {float(user['deals_sum']):.2f}$ [ ≈ 0 ₽ ]</blockquote>\n"
-        f"❗️ <b>ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</b>\n\n"
-        f"📅 <b>В системе с {registered_date}</b>\n"
-        f"✅ <b>АвтоГарант — @SHIFTrepbot</b>"
+        f"<blockquote><b>Депозит</b>\n"
+        f"🛟 ${float(user['deposit']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
+        f"<blockquote><b>Сделки</b>\n"
+        f"💰 {user['deals_count']} шт · ${float(user['deals_sum']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
+        f"<blockquote>❗️ <b>ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</b></blockquote>\n\n"
+        f"📅 В системе с {registered_date_ru}\n"
+        f"<blockquote><b>✅ АвтоГарант — @SHIFTrepbot</b></blockquote>"
     )
     
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_profile_keyboard())
