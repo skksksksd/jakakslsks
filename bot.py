@@ -23,7 +23,6 @@ class SearchStates(StatesGroup):
     waiting_search = State()
 
 class ReputationStates(StatesGroup):
-    waiting_type = State()
     waiting_review_photo = State()
 
 async def init_db():
@@ -207,7 +206,7 @@ def format_profile(user):
     )
     return text
 
-def get_profile_keyboard(is_own_profile=True):
+def get_profile_keyboard(is_own_profile=True, target_user_id=None):
     if is_own_profile:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="💳 Кошелек", callback_data="wallet", style="primary")],
@@ -215,7 +214,7 @@ def get_profile_keyboard(is_own_profile=True):
         ])
     else:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⚡️ Репутация", callback_data="rep_action", style="danger")],
+            [InlineKeyboardButton(text="⚡️ Репутация", callback_data=f"rep_action_{target_user_id}", style="danger")],
             [InlineKeyboardButton(text="Назад", callback_data="back_to_menu", style="primary")]
         ])
     return keyboard
@@ -274,41 +273,33 @@ async def process_search(message: types.Message, state: FSMContext):
     
     text = format_profile(user)
     is_own = (user["user_id"] == message.from_user.id)
-    await message.answer(text, parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=is_own))
+    await message.answer(text, parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=is_own, target_user_id=user["user_id"]))
     await state.clear()
 
-@dp.callback_query(lambda call: call.data == "rep_action")
+@dp.callback_query(lambda call: call.data.startswith("rep_action_"))
 async def rep_action(call: types.CallbackQuery, state: FSMContext):
-    text = call.message.text
-    match = re.search(r'ID:\s*(\d+)', text)
-    if not match:
-        await call.answer("Ошибка: не удалось определить пользователя", show_alert=True)
-        return
+    target_user_id = int(call.data.split("_")[2])
+    user = await get_user_by_id(target_user_id)
+    username = user["username"] if user else str(target_user_id)
     
-    user_id = int(match.group(1))
-    conn = await get_conn()
-    user = await conn.fetchrow("SELECT username FROM users WHERE user_id = $1", user_id)
-    await conn.close()
-    username = user["username"] if user else str(user_id)
-    
-    await state.update_data(target_user_id=user_id)
+    await state.update_data(target_user_id=target_user_id, target_username=username)
     
     text = f"<blockquote>📄 Какую репутацию @{username} вы хотите посмотреть?</blockquote>"
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Все", callback_data="rep_type_all", style="primary")],
-        [InlineKeyboardButton(text="Положительные", callback_data="rep_type_positive", style="success")],
-        [InlineKeyboardButton(text="Отрицательные", callback_data="rep_type_negative", style="danger")],
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_profile", style="primary")]
+        [InlineKeyboardButton(text="Все", callback_data=f"rep_type_all_{target_user_id}", style="primary")],
+        [InlineKeyboardButton(text="Положительные", callback_data=f"rep_type_positive_{target_user_id}", style="success")],
+        [InlineKeyboardButton(text="Отрицательные", callback_data=f"rep_type_negative_{target_user_id}", style="danger")],
+        [InlineKeyboardButton(text="Назад", callback_data=f"back_to_user_profile_{target_user_id}", style="primary")]
     ])
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await call.answer()
 
 @dp.callback_query(lambda call: call.data.startswith("rep_type_"))
 async def rep_type(call: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    target_user_id = data.get("target_user_id")
+    parts = call.data.split("_")
+    review_type = parts[2]
+    target_user_id = int(parts[3])
     
-    review_type = call.data.split("_")[2]
     if review_type == "all":
         review_type = None
     
@@ -323,7 +314,13 @@ async def rep_type(call: types.CallbackQuery, state: FSMContext):
     
     type_name = "Все" if review_type is None else ("Положительные" if review_type == "positive" else "Отрицательные")
     
-    await state.update_data(current_page=0, total_reviews=total, current_type=review_type, target_user_id=target_user_id)
+    await state.update_data(
+        current_page=0, 
+        total_reviews=total, 
+        current_type=review_type, 
+        target_user_id=target_user_id,
+        target_username=username
+    )
     
     await show_reviews_page(call, state, target_user_id, review_type, 0, username, type_name)
 
@@ -346,7 +343,7 @@ async def show_reviews_page(call, state, target_user_id, review_type, page, user
         nav_buttons.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"rep_page_{page+1}"))
     
     keyboard_buttons.append(nav_buttons)
-    keyboard_buttons.append([InlineKeyboardButton(text="◀️ Вернуться", callback_data="rep_action", style="primary")])
+    keyboard_buttons.append([InlineKeyboardButton(text="◀️ Назад к выбору", callback_data=f"rep_action_{target_user_id}", style="primary")])
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     
@@ -417,14 +414,14 @@ async def back_to_reviews(call: types.CallbackQuery, state: FSMContext):
     
     await show_reviews_page(call, state, target_user_id, review_type, page, username, type_name)
 
-@dp.callback_query(lambda call: call.data == "back_to_profile")
-async def back_to_profile(call: types.CallbackQuery, state: FSMContext):
+@dp.callback_query(lambda call: call.data.startswith("back_to_user_profile_"))
+async def back_to_user_profile(call: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    user_id = call.from_user.id
-    username = call.from_user.username or str(user_id)
-    user = await get_or_create_user(user_id, username)
+    target_user_id = int(call.data.split("_")[4])
+    user = await get_user_by_id(target_user_id)
     text = format_profile(user)
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=True))
+    is_own = (user["user_id"] == call.from_user.id)
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=is_own, target_user_id=target_user_id))
     await call.answer()
 
 @dp.callback_query(lambda call: call.data == "autogarant")
