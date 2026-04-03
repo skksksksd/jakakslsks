@@ -4,7 +4,7 @@ import logging
 import asyncpg
 import random
 import aiohttp
-from datetime import datetime
+from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -73,7 +73,8 @@ async def init_db():
             user_id BIGINT,
             amount DECIMAL,
             status TEXT DEFAULT 'pending',
-            created_at TIMESTAMP DEFAULT NOW()
+            created_at TIMESTAMP DEFAULT NOW(),
+            expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '5 minutes'
         )
     """)
     
@@ -88,7 +89,8 @@ async def init_db():
             amount DECIMAL,
             conditions TEXT,
             status TEXT DEFAULT 'pending_join',
-            created_at TIMESTAMP DEFAULT NOW()
+            created_at TIMESTAMP DEFAULT NOW(),
+            expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '5 minutes'
         )
     """)
     
@@ -109,6 +111,16 @@ async def init_db():
     
     try:
         await conn.execute("ALTER TABLE deals ADD COLUMN creator_role TEXT")
+    except Exception:
+        pass
+    
+    try:
+        await conn.execute("ALTER TABLE deals ADD COLUMN expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '5 minutes'")
+    except Exception:
+        pass
+    
+    try:
+        await conn.execute("ALTER TABLE invoices ADD COLUMN expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '5 minutes'")
     except Exception:
         pass
     
@@ -174,7 +186,7 @@ async def create_invoice(amount: float, user_id: int):
                 
                 conn = await get_conn()
                 await conn.execute(
-                    "INSERT INTO invoices (invoice_id, user_id, amount) VALUES ($1, $2, $3)",
+                    "INSERT INTO invoices (invoice_id, user_id, amount, expires_at) VALUES ($1, $2, $3, NOW() + INTERVAL '5 minutes')",
                     invoice_id, user_id, amount
                 )
                 await conn.close()
@@ -226,8 +238,17 @@ async def check_pending_invoices():
             await asyncio.sleep(1)
             
             conn = await get_conn()
-            pending = await conn.fetch("SELECT * FROM invoices WHERE status = 'pending'")
+            pending = await conn.fetch("SELECT * FROM invoices WHERE status = 'pending' AND expires_at > NOW()")
+            expired = await conn.fetch("SELECT * FROM invoices WHERE status = 'pending' AND expires_at <= NOW()")
             await conn.close()
+            
+            for inv in expired:
+                await bot.send_message(
+                    inv["user_id"],
+                    f"<blockquote>❌ Счёт на пополнение истёк\n\n• Сумма: {inv['amount']:.2f} USDT\n• Создайте новый счёт</blockquote>",
+                    parse_mode="HTML"
+                )
+                await mark_invoice_paid(inv["invoice_id"])
             
             for inv in pending:
                 status = await get_invoice_status(inv["invoice_id"])
@@ -245,6 +266,42 @@ async def check_pending_invoices():
         except Exception as e:
             logging.error(f"Error in check_pending_invoices: {e}")
 
+async def check_expired_deals():
+    while True:
+        try:
+            await asyncio.sleep(1)
+            
+            conn = await get_conn()
+            expired_join = await conn.fetch("SELECT * FROM deals WHERE status = 'pending_join' AND expires_at <= NOW()")
+            expired_payment = await conn.fetch("SELECT * FROM deals WHERE status = 'pending_payment' AND expires_at <= NOW()")
+            
+            for deal in expired_join:
+                await conn.execute("UPDATE deals SET status = 'expired' WHERE deal_id = $1", deal["deal_id"])
+                await bot.send_message(
+                    deal["creator_id"],
+                    f"<blockquote>❌ Сделка #{deal['deal_id']} закрыта\n\n• Партнёр не вступил в течение 5 минут\n• Создайте новую сделку</blockquote>",
+                    parse_mode="HTML"
+                )
+                logging.info(f"Deal {deal['deal_id']} expired (no partner joined)")
+            
+            for deal in expired_payment:
+                await conn.execute("UPDATE deals SET status = 'payment_expired' WHERE deal_id = $1", deal["deal_id"])
+                await bot.send_message(
+                    deal["buyer_id"],
+                    f"<blockquote>❌ Сделка #{deal['deal_id']} закрыта\n\n• Оплата не поступила в течение 5 минут\n• Создайте новую сделку</blockquote>",
+                    parse_mode="HTML"
+                )
+                await bot.send_message(
+                    deal["seller_id"],
+                    f"<blockquote>❌ Сделка #{deal['deal_id']} закрыта\n\n• Покупатель не оплатил в течение 5 минут\n• Создайте новую сделку</blockquote>",
+                    parse_mode="HTML"
+                )
+                logging.info(f"Deal {deal['deal_id']} expired (payment not received)")
+            
+            await conn.close()
+        except Exception as e:
+            logging.error(f"Error in check_expired_deals: {e}")
+
 async def create_deal(creator_id: int, creator_role: str, amount: float, conditions: str):
     conn = await get_conn()
     deal_id = generate_deal_id()
@@ -252,7 +309,7 @@ async def create_deal(creator_id: int, creator_role: str, amount: float, conditi
         deal_id = generate_deal_id()
     
     await conn.execute(
-        "INSERT INTO deals (deal_id, creator_id, creator_role, amount, conditions, status) VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO deals (deal_id, creator_id, creator_role, amount, conditions, status, expires_at) VALUES ($1, $2, $3, $4, $5, $6, NOW() + INTERVAL '5 minutes')",
         str(deal_id), creator_id, creator_role, amount, conditions, "pending_join"
     )
     await conn.close()
@@ -267,7 +324,7 @@ async def get_deal(deal_id: str):
 async def update_deal(deal_id: str, buyer_id: int, seller_id: int, status: str):
     conn = await get_conn()
     await conn.execute(
-        "UPDATE deals SET buyer_id = $1, seller_id = $2, status = $3 WHERE deal_id = $4",
+        "UPDATE deals SET buyer_id = $1, seller_id = $2, status = $3, expires_at = NOW() + INTERVAL '5 minutes' WHERE deal_id = $4",
         buyer_id, seller_id, status, deal_id
     )
     await conn.close()
@@ -388,7 +445,7 @@ async def deal_start(message: types.Message, state: FSMContext, deal_id: str):
     
     await state.update_data(deal_id=deal_id, amount=deal["amount"], conditions=deal["conditions"], creator_role=deal["creator_role"])
     
-    your_role = "💼 Продавец" if deal["creator_role"] == "buyer" else "🛒 Покупатель"
+    your_role = "Продавец" if deal["creator_role"] == "buyer" else "Покупатель"
     
     text = (
         f"<blockquote>📩 ПРИГЛАШЕНИЕ В СДЕЛКУ #{deal_id}\n\n"
@@ -442,7 +499,6 @@ async def process_search(message: types.Message, state: FSMContext):
         return
     
     text = format_profile(user)
-    # При поиске всегда показываем кнопку "Репутация", даже для своего профиля
     await message.answer(text, parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=False, target_user_id=user["user_id"]))
     await state.clear()
 
@@ -458,8 +514,8 @@ async def wallet(call: types.CallbackQuery):
     text = (
         f"<blockquote>💸 КОШЕЛЁК\n\n"
         f"• Баланс: {balance:.2f} USDT\n\n"
-        f"➖ Пополнение: от 1 USDT, комиссия 6%\n"
-        f"➕ Вывод: от 1 USDT, комиссия 0%\n\n"
+        f"• Пополнение: от 1 USDT, комиссия 6%\n"
+        f"• Вывод: от 1 USDT, комиссия 0%\n\n"
         f"Выберите действие:</blockquote>"
     )
     
@@ -483,8 +539,8 @@ async def wallet_autogarant(call: types.CallbackQuery):
     text = (
         f"<blockquote>💸 КОШЕЛЁК\n\n"
         f"• Баланс: {balance:.2f} USDT\n\n"
-        f"➖ Пополнение: от 1 USDT, комиссия 6%\n"
-        f"➕ Вывод: от 1 USDT, комиссия 0%\n\n"
+        f"• Пополнение: от 1 USDT, комиссия 6%\n"
+        f"• Вывод: от 1 USDT, комиссия 0%\n\n"
         f"Выберите действие:</blockquote>"
     )
     
@@ -640,35 +696,68 @@ async def autogarant(call: types.CallbackQuery):
 @dp.callback_query(lambda call: call.data == "my_deals")
 async def my_deals(call: types.CallbackQuery, state: FSMContext):
     await state.clear()
+    await state.update_data(current_page=0)
+    await show_deals_page(call, state, 0)
+
+async def show_deals_page(call, state, page):
     user_id = call.from_user.id
+    limit = 4
+    offset = page * limit
+    
     conn = await get_conn()
     deals = await conn.fetch(
-        "SELECT * FROM deals WHERE buyer_id = $1 OR seller_id = $1 ORDER BY created_at DESC",
+        "SELECT * FROM deals WHERE buyer_id = $1 OR seller_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+        user_id, limit, offset
+    )
+    total = await conn.fetchval(
+        "SELECT COUNT(*) FROM deals WHERE buyer_id = $1 OR seller_id = $1",
         user_id
     )
     await conn.close()
     
-    if not deals:
-        await call.answer("📋 У вас нет сделок", show_alert=True)
+    if not deals and page == 0:
+        await call.answer("У вас нет сделок", show_alert=True)
+        return
+    
+    if not deals and page > 0:
+        await call.answer("Это последняя страница", show_alert=True)
         return
     
     text = "<blockquote>📋 ВАШИ СДЕЛКИ\n\n• Нажмите на сделку для просмотра</blockquote>"
     keyboard = []
     for deal in deals:
         status_display = {
-            "pending_payment": "⏳ Ожидает оплаты",
+            "pending_join": "⏳ Ожидает вступления",
+            "expired": "❌ Истекла",
+            "pending_payment": "💳 Ожидает оплаты",
+            "payment_expired": "❌ Оплата не поступила",
             "paid": "💸 Оплачено, ожидает выполнения",
             "completed": "✅ Завершена",
-            "refunded": "🔄 Возвращена",
             "disputed": "⚠️ Спор"
         }.get(deal["status"], deal["status"])
         
         keyboard.append([InlineKeyboardButton(text=f"Сделка #{deal['deal_id']} — {status_display}", callback_data=f"my_deal_{deal['deal_id']}")])
     
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="Назад", callback_data=f"deals_page_{page-1}"))
+    
+    total_pages = (total + limit - 1) // limit
+    nav_buttons.append(InlineKeyboardButton(text=f"{page+1}/{total_pages}", callback_data="ignore"))
+    
+    if (page + 1) * limit < total:
+        nav_buttons.append(InlineKeyboardButton(text="Вперед", callback_data=f"deals_page_{page+1}"))
+    
+    keyboard.append(nav_buttons)
     keyboard.append([InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant", style="primary")])
     
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await call.answer()
+
+@dp.callback_query(lambda call: call.data.startswith("deals_page_"))
+async def deals_page(call: types.CallbackQuery, state: FSMContext):
+    page = int(call.data.split("_")[2])
+    await show_deals_page(call, state, page)
 
 @dp.callback_query(lambda call: call.data.startswith("my_deal_"))
 async def my_deal_detail(call: types.CallbackQuery, state: FSMContext):
@@ -686,10 +775,12 @@ async def my_deal_detail(call: types.CallbackQuery, state: FSMContext):
     seller_username = seller["username"] if seller else str(deal["seller_id"])
     
     status_display = {
-        "pending_payment": "⏳ Ожидает оплаты",
+        "pending_join": "⏳ Ожидает вступления",
+        "expired": "❌ Истекла",
+        "pending_payment": "💳 Ожидает оплаты",
+        "payment_expired": "❌ Оплата не поступила",
         "paid": "💸 Оплачено, ожидает выполнения",
         "completed": "✅ Завершена",
-        "refunded": "🔄 Возвращена",
         "disputed": "⚠️ Спор"
     }.get(deal["status"], deal["status"])
     
@@ -789,7 +880,7 @@ async def deal_conditions(message: types.Message, state: FSMContext):
     role = data.get("role")
     amount = data.get("amount")
     
-    role_display = "🛒 Покупатель" if role == "buyer" else "💼 Продавец"
+    role_display = "Покупатель" if role == "buyer" else "Продавец"
     
     text = (
         f"<blockquote>🏁 ПРОВЕРЬТЕ ДАННЫЕ\n\n"
@@ -823,15 +914,16 @@ async def confirm_deal(call: types.CallbackQuery, state: FSMContext):
     
     text = (
         f"<blockquote>🔗 ПРИГЛАШЕНИЕ В СДЕЛКУ #{deal_id}\n\n"
-        f"• Ваша роль: {'💼 Продавец' if role == 'buyer' else '🛒 Покупатель'}\n"
+        f"• Ваша роль: {'Продавец' if role == 'buyer' else 'Покупатель'}\n"
         f"• Сумма: {amount:.2f} USDT\n\n"
         f"Отправьте эту ссылку партнёру:\n"
         f"<code>{invite_link}</code>\n\n"
+        f"Ссылка действительна 5 минут.\n\n"
         f"После перехода партнёр подтвердит участие.</blockquote>"
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Мои сделки", callback_data="my_deals", style="primary")],
+        [InlineKeyboardButton(text="Мои сделки", callback_data="my_deals", style="primary")],
         [InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant", style="primary")]
     ])
     
@@ -870,10 +962,11 @@ async def accept_deal(call: types.CallbackQuery, state: FSMContext):
     
     text = (
         f"<blockquote>💳 ОПЛАТА ПО СДЕЛКЕ #{deal_id}\n\n"
-        f"• Ваша роль: 🛒 Покупатель\n"
+        f"• Ваша роль: Покупатель\n"
         f"• Сумма: {amount:.2f} USDT\n\n"
         f"📝 УСЛОВИЯ:\n{conditions}\n\n"
         f"• Ваш баланс: {buyer_balance:.2f} USDT\n\n"
+        f"Счёт действителен 5 минут.\n\n"
         f"После оплаты средства заморозятся до выполнения условий.</blockquote>"
     )
     
@@ -930,7 +1023,7 @@ async def pay_deal(call: types.CallbackQuery):
     
     buyer_keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚠️ Открыть спор", callback_data=f"open_dispute_{deal['deal_id']}", style="danger")],
-        [InlineKeyboardButton(text="📋 Мои сделки", callback_data="my_deals", style="primary")]
+        [InlineKeyboardButton(text="Мои сделки", callback_data="my_deals", style="primary")]
     ])
     
     await call.message.edit_text(
@@ -1012,7 +1105,7 @@ async def confirm_receive(call: types.CallbackQuery):
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Мои сделки", callback_data="my_deals", style="primary")]
+        [InlineKeyboardButton(text="Мои сделки", callback_data="my_deals", style="primary")]
     ])
     
     await call.message.edit_text(
@@ -1145,7 +1238,7 @@ async def rep_type(call: types.CallbackQuery, state: FSMContext):
     reviews, total = await get_reviews(target_user_id, review_type)
     
     if total == 0:
-        await call.answer("📭 Репутация отсутствует", show_alert=True)
+        await call.answer("Репутация отсутствует", show_alert=True)
         return
     
     user = await get_user_by_id(target_user_id)
@@ -1195,17 +1288,17 @@ async def show_reviews_page(call, state, target_user_id, review_type, page, user
     
     keyboard_buttons = []
     for r in reviews:
-        keyboard_buttons.append([InlineKeyboardButton(text=f"📝 Отзыв #{r['id']}", callback_data=f"review_{r['id']}")])
+        keyboard_buttons.append([InlineKeyboardButton(text=f"Отзыв #{r['id']}", callback_data=f"review_{r['id']}")])
     
     nav_buttons = []
     if page > 0:
-        nav_buttons.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"rep_page_{page-1}"))
+        nav_buttons.append(InlineKeyboardButton(text="Назад", callback_data=f"rep_page_{page-1}"))
     nav_buttons.append(InlineKeyboardButton(text=f"{page+1}/{((total-1)//limit)+1}", callback_data="ignore"))
     if (page + 1) * limit < total:
-        nav_buttons.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"rep_page_{page+1}"))
+        nav_buttons.append(InlineKeyboardButton(text="Вперед", callback_data=f"rep_page_{page+1}"))
     
     keyboard_buttons.append(nav_buttons)
-    keyboard_buttons.append([InlineKeyboardButton(text="◀️ Вернуться", callback_data=f"rep_action_{target_user_id}", style="primary")])
+    keyboard_buttons.append([InlineKeyboardButton(text="Вернуться", callback_data=f"rep_action_{target_user_id}", style="primary")])
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     
@@ -1254,7 +1347,7 @@ async def show_review(call: types.CallbackQuery):
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_reviews")]
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_reviews")]
     ])
     
     if review["photo_id"]:
@@ -1280,10 +1373,13 @@ async def back_to_reviews(call: types.CallbackQuery, state: FSMContext):
 async def back_to_user_profile(call: types.CallbackQuery, state: FSMContext):
     await state.clear()
     target_user_id = int(call.data.split("_")[4])
-    user = await get_user_by_id(target_user_id)
-    text = format_profile(user)
-    is_own = (user["user_id"] == call.from_user.id)
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=is_own, target_user_id=target_user_id))
+    conn = await get_conn()
+    user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", target_user_id)
+    await conn.close()
+    if user:
+        text = format_profile(user)
+        is_own = (user["user_id"] == call.from_user.id)
+        await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=is_own, target_user_id=target_user_id))
     await call.answer()
 
 @dp.callback_query(lambda call: call.data == "ignore")
@@ -1294,6 +1390,7 @@ async def main():
     await init_db()
     
     asyncio.create_task(check_pending_invoices())
+    asyncio.create_task(check_expired_deals())
     
     await dp.start_polling(bot)
 
