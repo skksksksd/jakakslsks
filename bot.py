@@ -457,7 +457,7 @@ async def deal_start(message: types.Message, state: FSMContext, deal_id: str):
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Принять сделку", callback_data="accept_deal", style="success")],
-        [InlineKeyboardButton(text="❌ Отклонить", callback_data="back_to_menu", style="danger")]
+        [InlineKeyboardButton(text="❌ Отклонить", callback_data="reject_deal", style="danger")]
     ])
     
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
@@ -955,10 +955,8 @@ async def accept_deal(call: types.CallbackQuery, state: FSMContext):
     
     await update_deal(deal_id, buyer_id, seller_id, "pending_payment")
     
-    # Создаем инвойс на оплату сделки
     invoice_url, invoice_id = await create_invoice(amount, buyer_id)
     
-    # Проверяем баланс покупателя
     conn = await get_conn()
     buyer_balance = await conn.fetchval("SELECT balance FROM users WHERE user_id = $1", buyer_id)
     await conn.close()
@@ -984,6 +982,32 @@ async def accept_deal(call: types.CallbackQuery, state: FSMContext):
     
     await call.answer("Вы приняли сделку", show_alert=True)
     await call.message.delete()
+
+@dp.callback_query(lambda call: call.data == "reject_deal")
+async def reject_deal(call: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    deal_id = data.get("deal_id")
+    creator_role = data.get("creator_role")
+    
+    deal = await get_deal(deal_id)
+    
+    if not deal or deal["status"] != "pending_join":
+        await call.answer("Сделка не найдена или уже принята", show_alert=True)
+        return
+    
+    await update_deal_status(deal_id, "expired")
+    
+    creator_id = deal["creator_id"]
+    
+    await bot.send_message(
+        creator_id,
+        f"<blockquote>❌ Сделка #{deal_id} отклонена партнёром\n\n• Создайте новую сделку</blockquote>",
+        parse_mode="HTML"
+    )
+    
+    await call.answer("Вы отклонили сделку", show_alert=True)
+    await call.message.delete()
+    await state.clear()
 
 @dp.callback_query(lambda call: call.data.startswith("pay_balance_"))
 async def pay_balance(call: types.CallbackQuery):
@@ -1030,6 +1054,25 @@ async def pay_balance(call: types.CallbackQuery):
         parse_mode="HTML"
     )
     await call.answer()
+
+@dp.callback_query(lambda call: call.data == "cancel_deal")
+async def cancel_deal(call: types.CallbackQuery):
+    conn = await get_conn()
+    deal = await conn.fetchrow("SELECT * FROM deals WHERE buyer_id = $1 AND status = 'pending_payment'", call.from_user.id)
+    
+    if deal:
+        seller_id = deal["seller_id"]
+        deal_id = deal["deal_id"]
+        await update_deal_status(deal_id, "expired")
+        await bot.send_message(
+            seller_id,
+            f"<blockquote>❌ Сделка #{deal_id} отменена покупателем</blockquote>",
+            parse_mode="HTML"
+        )
+    await conn.close()
+    
+    await call.answer("Сделка отменена", show_alert=True)
+    await call.message.delete()
 
 @dp.callback_query(lambda call: call.data.startswith("confirm_complete_"))
 async def confirm_complete(call: types.CallbackQuery):
@@ -1156,11 +1199,6 @@ async def open_dispute(call: types.CallbackQuery):
         parse_mode="HTML"
     )
     await call.answer()
-
-@dp.callback_query(lambda call: call.data == "cancel_deal")
-async def cancel_deal(call: types.CallbackQuery):
-    await call.answer("Сделка отменена", show_alert=True)
-    await call.message.delete()
 
 @dp.callback_query(lambda call: call.data == "back_to_autogarant")
 async def back_to_autogarant(call: types.CallbackQuery, state: FSMContext):
