@@ -92,11 +92,11 @@ async def profile(call: types.CallbackQuery):
     
     text = (
         f"👤 @{username} [ ID: {user_id} ]\n\n"
-        f"<blockquote>• <a href='callback://rep_{user_id}'>Репутация</a> {total_reputation}\n"
+        f"<blockquote>• <b><a href='callback://rep_{user_id}'>Репутация</a></b> {total_reputation}\n"
         f"➕ • {positive_percent:.1f}%\n"
         f"➖ • {negative_percent:.1f}%</blockquote>\n"
-        f"<blockquote><b>Депозит</b> 🛟 ${float(user['deposit']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
-        f"<blockquote><b>Сделки</b> 💰 {user['deals_count']} шт · ${float(user['deals_sum']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
+        f"<blockquote><b>Депозит:</b> 🛟 ${float(user['deposit']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
+        f"<blockquote><b>Сделки:</b> 💰 {user['deals_count']} шт · ${float(user['deals_sum']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
         f"<blockquote>❗️ <b>ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</b></blockquote>\n\n"
         f"📅 В системе с {registered_date_ru}\n"
         f"<blockquote><b>✅ АвтоГарант — @SHIFTrepbot</b></blockquote>"
