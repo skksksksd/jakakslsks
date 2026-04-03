@@ -96,12 +96,12 @@ async def profile(call: types.CallbackQuery):
         f"➕ • {positive_percent:.1f}%\n"
         f"➖ • {negative_percent:.1f}%</blockquote>\n"
         f"<b>Депозит</b>\n"
-        f"<blockquote>🛟 Депозит: ${float(user['deposit']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
+        f"<blockquote>🛟 {float(user['deposit']):.2f}$ [ ≈ 0 ₽ ]</blockquote>\n"
         f"<b>Сделки</b>\n"
-        f"<blockquote>💰 Сделки: {user['deals_count']} шт · ${float(user['deals_sum']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
-        f"<b>❗️ ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</b>\n\n"
-        f"<b>📅 В системе с {registered_date}</b>\n"
-        f"<b>✅ АвтоГарант — @SHIFTrepbot</b>"
+        f"<blockquote>💰 {user['deals_count']} шт · {float(user['deals_sum']):.2f}$ [ ≈ 0 ₽ ]</blockquote>\n"
+        f"❗️ <b>ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</b>\n\n"
+        f"📅 <b>В системе с {registered_date}</b>\n"
+        f"✅ <b>АвтоГарант — @SHIFTrepbot</b>"
     )
     
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_profile_keyboard())
