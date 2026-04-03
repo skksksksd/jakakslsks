@@ -943,7 +943,7 @@ async def accept_deal(call: types.CallbackQuery, state: FSMContext):
     deal = await get_deal(deal_id)
     
     if not deal or deal["status"] != "pending_join":
-        await call.answer("❌ Сделка не найдена или уже принята", show_alert=True)
+        await call.answer("Сделка не найдена или уже принята", show_alert=True)
         return
     
     if creator_role == "buyer":
@@ -955,6 +955,10 @@ async def accept_deal(call: types.CallbackQuery, state: FSMContext):
     
     await update_deal(deal_id, buyer_id, seller_id, "pending_payment")
     
+    # Создаем инвойс на оплату сделки
+    invoice_url, invoice_id = await create_invoice(amount, buyer_id)
+    
+    # Проверяем баланс покупателя
     conn = await get_conn()
     buyer_balance = await conn.fetchval("SELECT balance FROM users WHERE user_id = $1", buyer_id)
     await conn.close()
@@ -971,67 +975,59 @@ async def accept_deal(call: types.CallbackQuery, state: FSMContext):
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Оплатить", callback_data="pay_deal", style="success")],
+        [InlineKeyboardButton(text="💳 Оплатить балансом", callback_data=f"pay_balance_{deal_id}", style="success")],
+        [InlineKeyboardButton(text="💳 Оплата CryptoBot", url=invoice_url)],
         [InlineKeyboardButton(text="❌ Отменить сделку", callback_data="cancel_deal", style="danger")]
     ])
     
     await bot.send_message(buyer_id, text, parse_mode="HTML", reply_markup=keyboard)
     
-    await call.message.edit_text(f"<blockquote>✅ Вы приняли сделку #{deal_id}\n\n• Ожидайте оплаты от покупателя</blockquote>", parse_mode="HTML")
-    await state.clear()
-    await call.answer()
+    await call.answer("Вы приняли сделку", show_alert=True)
+    await call.message.delete()
 
-@dp.callback_query(lambda call: call.data == "pay_deal")
-async def pay_deal(call: types.CallbackQuery):
-    user_id = call.from_user.id
+@dp.callback_query(lambda call: call.data.startswith("pay_balance_"))
+async def pay_balance(call: types.CallbackQuery):
+    deal_id = call.data.split("_")[2]
+    deal = await get_deal(deal_id)
     
-    conn = await get_conn()
-    deal = await conn.fetchrow("SELECT * FROM deals WHERE buyer_id = $1 AND status = 'pending_payment'", user_id)
-    await conn.close()
-    
-    if not deal:
-        await call.answer("❌ Сделка не найдена", show_alert=True)
+    if not deal or deal["status"] != "pending_payment":
+        await call.answer("Сделка не найдена или уже оплачена", show_alert=True)
         return
     
+    buyer_id = call.from_user.id
     amount = float(deal["amount"])
     
     conn = await get_conn()
-    balance = await conn.fetchval("SELECT balance FROM users WHERE user_id = $1", user_id)
+    balance = await conn.fetchval("SELECT balance FROM users WHERE user_id = $1", buyer_id)
     await conn.close()
     balance = float(balance) if balance else 0
     
     if balance < amount:
-        await call.answer("❌ Недостаточно средств", show_alert=True)
+        await call.answer(f"❌ Недостаточно средств. Доступно: {balance:.2f} USDT", show_alert=True)
         return
     
-    await freeze_balance(user_id, amount)
-    await update_deal_status(deal["deal_id"], "paid")
+    await freeze_balance(buyer_id, amount)
+    await update_deal_status(deal_id, "paid")
     
     seller_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Подтвердить выполнение", callback_data=f"confirm_complete_{deal['deal_id']}", style="success")],
-        [InlineKeyboardButton(text="⚠️ Открыть спор", callback_data=f"open_dispute_{deal['deal_id']}", style="danger")]
+        [InlineKeyboardButton(text="✅ Подтвердить выполнение", callback_data=f"confirm_complete_{deal_id}", style="success")],
+        [InlineKeyboardButton(text="⚠️ Открыть спор", callback_data=f"open_dispute_{deal_id}", style="danger")]
     ])
     
     await bot.send_message(
         deal["seller_id"],
-        f"<blockquote>💰 ОПЛАТА ПОЛУЧЕНА #{deal['deal_id']}\n\n"
+        f"<blockquote>💰 ОПЛАТА ПОЛУЧЕНА #{deal_id}\n\n"
         f"• Сумма: {amount:.2f} USDT заморожена\n\n"
         f"Приступайте к выполнению условий.</blockquote>",
         parse_mode="HTML",
         reply_markup=seller_keyboard
     )
     
-    buyer_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚠️ Открыть спор", callback_data=f"open_dispute_{deal['deal_id']}", style="danger")],
-        [InlineKeyboardButton(text="Мои сделки", callback_data="my_deals", style="primary")]
-    ])
-    
     await call.message.edit_text(
-        f"<blockquote>✅ ОПЛАТА ПОДТВЕРЖДЕНА #{deal['deal_id']}\n\n"
+        f"<blockquote>✅ ОПЛАТА ПОДТВЕРЖДЕНА #{deal_id}\n\n"
         f"• Сумма: {amount:.2f} USDT заморожена\n\n"
         f"Ожидайте выполнения условий от продавца.</blockquote>",
-        parse_mode="HTML",
-        reply_markup=buyer_keyboard
+        parse_mode="HTML"
     )
     await call.answer()
 
@@ -1041,7 +1037,7 @@ async def confirm_complete(call: types.CallbackQuery):
     deal = await get_deal(deal_id)
     
     if not deal or deal["status"] != "paid":
-        await call.answer("❌ Сделка не найдена или уже завершена", show_alert=True)
+        await call.answer("Сделка не найдена или уже завершена", show_alert=True)
         return
     
     text = (
@@ -1065,7 +1061,7 @@ async def confirm_done(call: types.CallbackQuery):
     deal = await get_deal(deal_id)
     
     if not deal or deal["status"] != "paid":
-        await call.answer("❌ Сделка не найдена или уже завершена", show_alert=True)
+        await call.answer("Сделка не найдена или уже завершена", show_alert=True)
         return
     
     buyer_keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -1090,7 +1086,7 @@ async def confirm_receive(call: types.CallbackQuery):
     deal = await get_deal(deal_id)
     
     if not deal or deal["status"] != "paid":
-        await call.answer("❌ Сделка не найдена или уже завершена", show_alert=True)
+        await call.answer("Сделка не найдена или уже завершена", show_alert=True)
         return
     
     await unfreeze_balance_to_seller(deal_id)
@@ -1124,7 +1120,7 @@ async def open_dispute(call: types.CallbackQuery):
     deal = await get_deal(deal_id)
     
     if not deal:
-        await call.answer("❌ Сделка не найдена", show_alert=True)
+        await call.answer("Сделка не найдена", show_alert=True)
         return
     
     await update_deal_status(deal_id, "disputed")
@@ -1163,7 +1159,7 @@ async def open_dispute(call: types.CallbackQuery):
 
 @dp.callback_query(lambda call: call.data == "cancel_deal")
 async def cancel_deal(call: types.CallbackQuery):
-    await call.answer("❌ Сделка отменена", show_alert=True)
+    await call.answer("Сделка отменена", show_alert=True)
     await call.message.delete()
 
 @dp.callback_query(lambda call: call.data == "back_to_autogarant")
