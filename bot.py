@@ -15,7 +15,7 @@ from aiogram.fsm.context import FSMContext
 logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost/db")
-CRYPTO_TOKEN = os.getenv("CRYPTO_TESTNET_TOKEN")
+CRYPTO_TOKEN = os.getenv("CRYPTO_TOKEN")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -121,7 +121,7 @@ async def find_user_by_query(query: str):
     return user
 
 async def create_invoice(amount: float, user_id: int):
-    url = "https://testnet-pay.crypt.bot/api/createInvoice"
+    url = "https://pay.crypt.bot/api/createInvoice"
     headers = {"Crypto-Pay-API-Token": CRYPTO_TOKEN}
     data = {
         "asset": "USDT",
@@ -147,7 +147,7 @@ async def create_invoice(amount: float, user_id: int):
             return None, None
 
 async def get_invoice_status(invoice_id: str):
-    url = "https://testnet-pay.crypt.bot/api/getInvoices"
+    url = "https://pay.crypt.bot/api/getInvoices"
     headers = {"Crypto-Pay-API-Token": CRYPTO_TOKEN}
     params = {"invoice_ids": invoice_id}
     
@@ -159,7 +159,7 @@ async def get_invoice_status(invoice_id: str):
             return None
 
 async def create_check(amount: float):
-    url = "https://testnet-pay.crypt.bot/api/createCheck"
+    url = "https://pay.crypt.bot/api/createCheck"
     headers = {"Crypto-Pay-API-Token": CRYPTO_TOKEN}
     data = {
         "asset": "USDT",
