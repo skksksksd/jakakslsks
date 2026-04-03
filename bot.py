@@ -27,7 +27,6 @@ async def init_db():
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
-            virtual_id INT UNIQUE,
             username TEXT,
             reputation_positive INT DEFAULT 0,
             reputation_negative INT DEFAULT 0,
@@ -38,6 +37,11 @@ async def init_db():
             registered_at TIMESTAMP DEFAULT NOW()
         )
     """)
+    
+    try:
+        await conn.execute("ALTER TABLE users ADD COLUMN virtual_id INT UNIQUE")
+    except Exception:
+        pass
     
     await conn.close()
 
