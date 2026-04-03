@@ -89,15 +89,15 @@ async def profile(call: types.CallbackQuery):
     registered_date = user["registered_at"].strftime("%d %B %Y года")
     
     text = (
-        f"<blockquote>👤 @{username} [ ID: {user_id} ]\n\n"
-        f"• <a href='callback://rep_{user_id}'>Репутация</a> {total_reputation}\n"
+        f"👤 @{username} [ ID: {user_id} ]\n\n"
+        f"<blockquote>• <a href='callback://rep_{user_id}'>Репутация</a> {total_reputation}\n"
         f"➕ • {positive_percent:.1f}%\n"
-        f"➖ • {negative_percent:.1f}%\n"
-        f"🛟 Депозит: ${float(user['deposit']):.2f} [ ≈ 0 ₽ ]\n"
-        f"💰 Сделки: {user['deals_count']} шт · ${float(user['deals_sum']):.2f} [ ≈ 0 ₽ ]\n\n"
-        f"❗️ ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»\n\n"
+        f"➖ • {negative_percent:.1f}%</blockquote>\n"
+        f"<blockquote>🛟 Депозит: ${float(user['deposit']):.2f} [ ≈ 0 ₽ ]\n"
+        f"💰 Сделки: {user['deals_count']} шт · ${float(user['deals_sum']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
+        f"<blockquote>❗️ ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</blockquote>\n"
         f"📅 В системе с {registered_date}\n"
-        f"✅ АвтоГарант — @SHIFTrepbot</blockquote>"
+        f"<blockquote>✅ АвтоГарант — @SHIFTrepbot</blockquote>"
     )
     
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_profile_keyboard())
