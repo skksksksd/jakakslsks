@@ -289,7 +289,7 @@ async def rep_action(call: types.CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="Все", callback_data=f"rep_type_all_{target_user_id}", style="primary")],
         [InlineKeyboardButton(text="Положительные", callback_data=f"rep_type_positive_{target_user_id}", style="success")],
         [InlineKeyboardButton(text="Отрицательные", callback_data=f"rep_type_negative_{target_user_id}", style="danger")],
-        [InlineKeyboardButton(text="Назад", callback_data=f"back_to_user_profile_{target_user_id}", style="primary")]
+        [InlineKeyboardButton(text="◀️ Назад", callback_data=f"back_to_user_profile_{target_user_id}", style="primary")]
     ])
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await call.answer()
@@ -343,7 +343,7 @@ async def show_reviews_page(call, state, target_user_id, review_type, page, user
         nav_buttons.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"rep_page_{page+1}"))
     
     keyboard_buttons.append(nav_buttons)
-    keyboard_buttons.append([InlineKeyboardButton(text="◀️ Назад к выбору", callback_data=f"rep_action_{target_user_id}", style="primary")])
+    keyboard_buttons.append([InlineKeyboardButton(text="◀️ Вернуться", callback_data=f"rep_action_{target_user_id}", style="primary")])
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     
