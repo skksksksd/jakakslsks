@@ -59,6 +59,12 @@ async def get_or_create_user(user_id: int, username: str):
             user_id, virtual_id, username
         )
         user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
+    elif user["virtual_id"] is None:
+        virtual_id = generate_virtual_id()
+        while await conn.fetchval("SELECT 1 FROM users WHERE virtual_id = $1", virtual_id):
+            virtual_id = generate_virtual_id()
+        await conn.execute("UPDATE users SET virtual_id = $1 WHERE user_id = $2", virtual_id, user_id)
+        user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
     await conn.close()
     return user
 
@@ -77,10 +83,10 @@ async def find_user_by_query(query: str):
     await conn.close()
     return user
 
-def format_profile(user, is_own_profile=True):
+def format_profile(user):
     user_id = user["user_id"]
     username = user["username"] or str(user_id)
-    virtual_id = user["virtual_id"]
+    virtual_id = user["virtual_id"] if user["virtual_id"] else user_id
     
     total_reputation = user["reputation_positive"] + user["reputation_negative"]
     positive_percent = (user["reputation_positive"] / total_reputation * 100) if total_reputation > 0 else 0
@@ -111,7 +117,7 @@ def get_profile_keyboard(is_own_profile=True):
     else:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⚡️ Репутация", callback_data="rep_action", style="danger")],
-            [InlineKeyboardButton(text="Назад", callback_data="back_to_search")]
+            [InlineKeyboardButton(text="Назад", callback_data="back_to_menu", style="primary")]
         ])
     return keyboard
 
@@ -141,7 +147,7 @@ async def profile(call: types.CallbackQuery):
     username = call.from_user.username or str(user_id)
     
     user = await get_or_create_user(user_id, username)
-    text = format_profile(user, is_own_profile=True)
+    text = format_profile(user)
     
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=True))
     await call.answer()
@@ -167,21 +173,10 @@ async def process_search(message: types.Message, state: FSMContext):
         await message.answer("<blockquote>❌ Пользователь не найден. Проверьте данные и попробуйте снова.</blockquote>", parse_mode="HTML")
         return
     
-    text = format_profile(user, is_own_profile=False)
-    await message.answer(text, parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=False))
+    text = format_profile(user)
+    is_own = (user["user_id"] == message.from_user.id)
+    await message.answer(text, parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=is_own))
     await state.clear()
-
-@dp.callback_query(lambda call: call.data == "back_to_search")
-async def back_to_search(call: types.CallbackQuery, state: FSMContext):
-    text = (
-        "<blockquote>🔎 Введите @юзернейм или ID пользователя для поиска.</blockquote>"
-    )
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_menu", style="primary")]
-    ])
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
-    await state.set_state(SearchStates.waiting_search)
-    await call.answer()
 
 @dp.callback_query(lambda call: call.data == "rep_action")
 async def rep_action(call: types.CallbackQuery):
