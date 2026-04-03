@@ -339,7 +339,14 @@ def get_role_keyboard():
     return keyboard
 
 @dp.message(Command("start"))
-async def start(message: types.Message):
+async def start(message: types.Message, state: FSMContext):
+    args = message.text.split()
+    
+    if len(args) > 1 and args[1].startswith("deal_"):
+        deal_id = args[1].split("_")[1]
+        await deal_start(message, state, deal_id)
+        return
+    
     user_id = message.from_user.id
     username = message.from_user.username or str(user_id)
     
@@ -351,13 +358,7 @@ async def start(message: types.Message):
     )
     await message.answer(text, parse_mode="HTML", reply_markup=get_main_keyboard())
 
-@dp.message(Command("deal"))
-async def deal_start(message: types.Message, state: FSMContext):
-    args = message.text.split()
-    if len(args) != 2:
-        return
-    
-    deal_id = args[1]
+async def deal_start(message: types.Message, state: FSMContext, deal_id: str):
     deal = await get_deal(deal_id)
     
     if not deal or deal["status"] != "pending_join":
@@ -365,7 +366,6 @@ async def deal_start(message: types.Message, state: FSMContext):
         return
     
     user_id = message.from_user.id
-    username = message.from_user.username or str(user_id)
     
     await state.update_data(deal_id=deal_id, amount=deal["amount"], conditions=deal["conditions"])
     
@@ -781,7 +781,6 @@ async def confirm_deal(call: types.CallbackQuery, state: FSMContext):
     role = data.get("role")
     amount = data.get("amount")
     conditions = data.get("conditions")
-    creator_id = call.from_user.id
     
     deal_id = await create_deal(amount, conditions)
     
@@ -821,15 +820,13 @@ async def accept_deal(call: types.CallbackQuery, state: FSMContext):
     
     if deal["buyer_id"] == 0:
         buyer_id = joiner_id
-        seller_id = deal.get("seller_id", 0)
-        if seller_id == 0:
-            seller_id = 0
+        seller_id = 0
     else:
         buyer_id = deal["buyer_id"]
         seller_id = joiner_id
     
-    if buyer_id == 0 or seller_id == 0:
-        await call.answer("Ожидайте создания сделки создателем", show_alert=True)
+    if buyer_id == 0:
+        await call.answer("Ожидайте, сделка ещё не настроена", show_alert=True)
         return
     
     await update_deal(deal_id, buyer_id, seller_id, "pending_payment")
