@@ -391,32 +391,6 @@ def format_profile(user):
     )
     return text
 
-def format_profile_group(user, bot_username):
-    user_id = user["user_id"]
-    username = user["username"] or str(user_id)
-    virtual_id = user["virtual_id"] if user["virtual_id"] else user_id
-    
-    total_reputation = user["reputation_positive"] + user["reputation_negative"]
-    positive_percent = (user["reputation_positive"] / total_reputation * 100) if total_reputation > 0 else 0
-    negative_percent = (user["reputation_negative"] / total_reputation * 100) if total_reputation > 0 else 0
-    
-    registered_date = user["registered_at"].strftime("%d %B %Y года")
-    registered_date_ru = registered_date.replace("January", "января").replace("February", "февраля").replace("March", "марта").replace("April", "апреля").replace("May", "мая").replace("June", "июня").replace("July", "июля").replace("August", "августа").replace("September", "сентября").replace("October", "октября").replace("November", "ноября").replace("December", "декабря")
-    
-    text = (
-        f"👤 @{username} [ ID: {virtual_id} ]\n\n"
-        f"<blockquote>• <b>Репутация</b> {total_reputation}\n"
-        f"➕ • {positive_percent:.1f}%\n"
-        f"➖ • {negative_percent:.1f}%</blockquote>\n"
-        f"<blockquote><b>Депозит:</b> 🛟 ${float(user['deposit']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
-        f"<blockquote><b>Сделки:</b> 💰 {user['deals_count']} шт · ${float(user['deals_sum']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
-        f"<blockquote>❗️ <b>ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</b></blockquote>\n\n"
-        f"📅 В системе с {registered_date_ru}\n"
-        f"<blockquote><b>✅ АвтоГарант — @SHIFTrepbot</b></blockquote>\n\n"
-        f"🔗 <a href='https://t.me/{bot_username}?start=user_{user_id}'>🛟 Профиль</a>"
-    )
-    return text
-
 def get_profile_keyboard(is_own_profile=True, target_user_id=None):
     if is_own_profile:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -460,8 +434,97 @@ def get_admin_keyboard():
     ])
     return keyboard
 
+def parse_review_command(text: str):
+    text_lower = text.lower().strip()
+    
+    if re.search(r'\d\+реп', text_lower):
+        return None
+    if re.search(r'\d\+rep', text_lower):
+        return None
+    
+    blacklist = [
+        r'\bвыдам\b', r'\bвыдаю\b', r'\bвыдадим\b',
+        r'\bоплачу\b', r'\bоплачиваю\b', r'\bоплатим\b',
+        r'\bпродам\b', r'\bпродаю\b', r'\bпродадим\b',
+        r'\bкуплю\b', r'\bпокупаю\b', r'\bкупим\b',
+        r'\bсделаю\b', r'\bделаю\b', r'\bсделаем\b',
+        r'\bзаберу\b', r'\bзабираю\b',
+        r'\bотдам\b', r'\bотдаю\b',
+        r'\bпредложу\b', r'\bпредлагаю\b',
+        r'\bнапишу\b', r'\bпишу\b',
+        r'\bскину\b', r'\bскидываю\b',
+        r'\bпереведу\b', r'\bперевожу\b',
+        r'\bдам\b', r'\bдаю\b',
+        r'\bготов\b', r'\bготовлю\b',
+    ]
+    
+    for word in blacklist:
+        if re.search(word, text_lower):
+            return None
+    
+    patterns = [
+        r'(\+реп|\-реп)\s+@?(\w+)(?:\s+(.+))?',
+        r'@?(\w+)\s+(\+реп|\-реп)(?:\s+(.+))?',
+        r'(\+реп|\-реп)\s+(\d+)(?:\s+(.+))?',
+        r'(\d+)\s+(\+реп|\-реп)(?:\s+(.+))?',
+        r'(\+rep|\-rep)\s+@?(\w+)(?:\s+(.+))?',
+        r'@?(\w+)\s+(\+rep|\-rep)(?:\s+(.+))?',
+        r'(\+rep|\-rep)\s+(\d+)(?:\s+(.+))?',
+        r'(\d+)\s+(\+rep|\-rep)(?:\s+(.+))?',
+        r'@(\w+)\+реп(?:\s+(.+))?',
+        r'@(\w+)\-реп(?:\s+(.+))?',
+        r'@(\w+)\+rep(?:\s+(.+))?',
+        r'@(\w+)\-rep(?:\s+(.+))?',
+        r'(\+реп)(\d+)(?:\s+(.+))?',
+        r'(\-реп)(\d+)(?:\s+(.+))?',
+        r'(\+rep)(\d+)(?:\s+(.+))?',
+        r'(\-rep)(\d+)(?:\s+(.+))?',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text_lower, re.IGNORECASE)
+        if match:
+            groups = match.groups()
+            if len(groups) == 3:
+                if groups[0] in ['+реп', '+rep', '-реп', '-rep']:
+                    review_type = 'positive' if groups[0] in ['+реп', '+rep'] else 'negative'
+                    target = groups[1]
+                    review_text = groups[2] if groups[2] else ''
+                elif groups[1] in ['+реп', '+rep', '-реп', '-rep']:
+                    review_type = 'positive' if groups[1] in ['+реп', '+rep'] else 'negative'
+                    target = groups[0]
+                    review_text = groups[2] if groups[2] else ''
+                else:
+                    continue
+                
+                target = target.replace('@', '')
+                
+                return {
+                    'type': review_type,
+                    'target': target,
+                    'text': review_text.strip() if review_text else ''
+                }
+            elif len(groups) == 2:
+                target = groups[0]
+                review_text = groups[1] if groups[1] else ''
+                if '+реп' in text_lower or '+rep' in text_lower:
+                    review_type = 'positive'
+                else:
+                    review_type = 'negative'
+                
+                return {
+                    'type': review_type,
+                    'target': target,
+                    'text': review_text.strip() if review_text else ''
+                }
+    
+    return None
+
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext):
+    if message.chat.type != "private":
+        return
+    
     args = message.text.split()
     
     if len(args) > 1 and args[1].startswith("deal_"):
@@ -476,10 +539,24 @@ async def start(message: types.Message, state: FSMContext):
         await conn.close()
         if user:
             text = format_profile(user)
-            is_own = (user["user_id"] == message.from_user.id)
-            await message.answer(text, parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=is_own, target_user_id=target_user_id))
+            await message.answer(text, parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=False, target_user_id=target_user_id))
         else:
             await message.answer("<blockquote>❌ Пользователь не найден</blockquote>", parse_mode="HTML")
+        return
+    
+    if len(args) > 1 and args[1].startswith("rep_user_"):
+        target_user_id = int(args[1].split("_")[2])
+        user = await get_user_by_id(target_user_id)
+        username = user["username"] if user else str(target_user_id)
+        await state.update_data(target_user_id=target_user_id, target_username=username)
+        
+        text = f"<blockquote>Какую репутацию @{username} вы хотите посмотреть?</blockquote>"
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Все", callback_data=f"rep_type_all_{target_user_id}", style="primary")],
+            [InlineKeyboardButton(text="Положительные", callback_data=f"rep_type_positive_{target_user_id}", style="success"), InlineKeyboardButton(text="Отрицательные", callback_data=f"rep_type_negative_{target_user_id}", style="danger")],
+            [InlineKeyboardButton(text="Назад", callback_data="back_to_menu", style="primary")]
+        ])
+        await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
         return
     
     user_id = message.from_user.id
@@ -539,13 +616,111 @@ async def group_profile(message: types.Message):
         await message.answer("<blockquote>❌ Пользователь не найден</blockquote>", parse_mode="HTML")
         return
     
-    text = format_profile_group(user, bot_username)
+    text = format_profile_group_no_link(user)
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛟 Профиль", url=f"https://t.me/{bot_username}?start=user_{target_user_id}")]
     ])
     
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+
+def format_profile_group_no_link(user):
+    user_id = user["user_id"]
+    username = user["username"] or str(user_id)
+    virtual_id = user["virtual_id"] if user["virtual_id"] else user_id
+    
+    total_reputation = user["reputation_positive"] + user["reputation_negative"]
+    positive_percent = (user["reputation_positive"] / total_reputation * 100) if total_reputation > 0 else 0
+    negative_percent = (user["reputation_negative"] / total_reputation * 100) if total_reputation > 0 else 0
+    
+    registered_date = user["registered_at"].strftime("%d %B %Y года")
+    registered_date_ru = registered_date.replace("January", "января").replace("February", "февраля").replace("March", "марта").replace("April", "апреля").replace("May", "мая").replace("June", "июня").replace("July", "июля").replace("August", "августа").replace("September", "сентября").replace("October", "октября").replace("November", "ноября").replace("December", "декабря")
+    
+    text = (
+        f"👤 @{username} [ ID: {virtual_id} ]\n\n"
+        f"<blockquote>• <b>Репутация</b> {total_reputation}\n"
+        f"➕ • {positive_percent:.1f}%\n"
+        f"➖ • {negative_percent:.1f}%</blockquote>\n"
+        f"<blockquote><b>Депозит:</b> 🛟 ${float(user['deposit']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
+        f"<blockquote><b>Сделки:</b> 💰 {user['deals_count']} шт · ${float(user['deals_sum']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
+        f"<blockquote>❗️ <b>ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</b></blockquote>\n\n"
+        f"📅 В системе с {registered_date_ru}\n"
+        f"<blockquote><b>✅ АвтоГарант — @SHIFTrepbot</b></blockquote>"
+    )
+    return text
+
+@dp.message()
+async def handle_review_command(message: types.Message):
+    if not message.text:
+        return
+    
+    if not message.photo:
+        return
+    
+    text_lower = message.text.lower()
+    if not any(x in text_lower for x in ['+реп', '-реп', '+rep', '-rep']):
+        return
+    
+    parsed = parse_review_command(message.text)
+    
+    if not parsed:
+        return
+    
+    target = parsed['target']
+    review_type = parsed['type']
+    review_text = parsed['text']
+    photo_id = message.photo[-1].file_id
+    
+    from_user_id = message.from_user.id
+    
+    if target.isdigit():
+        target_user_id = int(target)
+        target_user = await get_or_create_user(target_user_id, str(target_user_id))
+        target_username = target_user["username"] if target_user else str(target_user_id)
+    else:
+        target_user = await find_user_by_query(f"@{target}")
+        if not target_user:
+            await message.answer("<blockquote>❌ Пользователь не найден</blockquote>", parse_mode="HTML")
+            return
+        target_user_id = target_user["user_id"]
+        target_username = target_user["username"]
+    
+    if from_user_id == target_user_id:
+        await message.answer("<blockquote>❌ Нельзя оставить отзыв самому себе</blockquote>", parse_mode="HTML")
+        return
+    
+    conn = await get_conn()
+    await conn.execute(
+        "INSERT INTO reviews (from_user_id, to_user_id, review_type, review_text, photo_id) VALUES ($1, $2, $3, $4, $5)",
+        from_user_id, target_user_id, review_type, review_text, photo_id
+    )
+    
+    if review_type == "positive":
+        await conn.execute("UPDATE users SET reputation_positive = reputation_positive + 1 WHERE user_id = $1", target_user_id)
+        review_emoji = "👍"
+        review_text_display = "Положительный"
+    else:
+        await conn.execute("UPDATE users SET reputation_negative = reputation_negative + 1 WHERE user_id = $1", target_user_id)
+        review_emoji = "👎"
+        review_text_display = "Отрицательный"
+    
+    await conn.close()
+    
+    from_user = await get_user_by_id(from_user_id)
+    from_username = from_user["username"] if from_user else str(from_user_id)
+    
+    await bot.send_message(
+        target_user_id,
+        f"<blockquote>{review_emoji} Вы получили {review_text_display} отзыв от @{from_username}\n\n📝 {review_text}</blockquote>",
+        parse_mode="HTML"
+    )
+    
+    if message.chat.type != "private":
+        bot_username = (await bot.get_me()).username
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="ℹ️", url=f"https://t.me/{bot_username}?start=rep_user_{target_user_id}")]
+        ])
+        await message.answer("<blockquote>✅ Отзыв сохранен</blockquote>", parse_mode="HTML", reply_markup=keyboard)
 
 @dp.callback_query(lambda call: call.data == "admin_post")
 async def admin_post(call: types.CallbackQuery, state: FSMContext):
