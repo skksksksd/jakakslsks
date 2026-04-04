@@ -591,7 +591,7 @@ async def handle_group_review(message: types.Message):
 
 # ========== ЕДИНЫЙ УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК ==========
 @dp.message()
-async def handle_all_messages(message: types.Message):
+async def handle_all_messages(message: types.Message, state: FSMContext):
     # Игнорируем ботов
     if message.from_user.is_bot:
         return
@@ -608,7 +608,7 @@ async def handle_all_messages(message: types.Message):
         
         # Обработка команд
         if message.text.startswith("/start"):
-            await start(message)
+            await start(message, state)
         elif message.text.startswith("/admin"):
             await admin_panel(message)
         # Здесь можно добавить другие команды для ЛС если нужно
