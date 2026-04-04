@@ -22,7 +22,6 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# ========== СОСТОЯНИЯ (FSM) ==========
 class SearchStates(StatesGroup):
     waiting_search = State()
 
@@ -40,7 +39,6 @@ class DealStates(StatesGroup):
 class AdminStates(StatesGroup):
     waiting_post = State()
 
-# ========== ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ==========
 async def init_db():
     conn = await asyncpg.connect(DATABASE_URL)
     
@@ -102,7 +100,6 @@ async def init_db():
         )
     """)
     
-    # Автоматическое добавление колонок для старых таблиц
     try:
         await conn.execute("ALTER TABLE users ADD COLUMN virtual_id INT UNIQUE")
     except Exception:
@@ -147,9 +144,7 @@ def generate_virtual_id():
 def generate_deal_id():
     return random.randint(1000, 9999)
 
-# ========== РАБОТА С ПОЛЬЗОВАТЕЛЯМИ ==========
 async def get_or_create_user(user_id: int, username: str):
-    """Создать пользователя если нет, или вернуть существующего"""
     conn = await get_conn()
     user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
     if not user:
@@ -165,7 +160,6 @@ async def get_or_create_user(user_id: int, username: str):
     return user
 
 async def find_user_by_query(query: str):
-    """Найти пользователя по @username, ID или виртуальному ID"""
     conn = await get_conn()
     query = query.strip()
     if query.startswith("@"):
@@ -179,15 +173,12 @@ async def find_user_by_query(query: str):
     return user
 
 async def get_user_by_id(user_id: int):
-    """Получить username пользователя по ID"""
     conn = await get_conn()
     user = await conn.fetchrow("SELECT username FROM users WHERE user_id = $1", user_id)
     await conn.close()
     return user
 
-# ========== КРИПТОБОТ API ==========
 async def create_invoice(amount: float, user_id: int):
-    """Создать счёт на оплату через CryptoBot"""
     url = "https://pay.crypt.bot/api/createInvoice"
     headers = {"Crypto-Pay-API-Token": CRYPTO_TOKEN}
     data = {
@@ -211,7 +202,6 @@ async def create_invoice(amount: float, user_id: int):
             return None, None
 
 async def get_invoice_status(invoice_id: str):
-    """Проверить статус счёта в CryptoBot"""
     url = "https://pay.crypt.bot/api/getInvoices"
     headers = {"Crypto-Pay-API-Token": CRYPTO_TOKEN}
     params = {"invoice_ids": invoice_id}
@@ -223,7 +213,6 @@ async def get_invoice_status(invoice_id: str):
             return None
 
 async def create_check(amount: float):
-    """Создать чек для вывода средств через CryptoBot"""
     url = "https://pay.crypt.bot/api/createCheck"
     headers = {"Crypto-Pay-API-Token": CRYPTO_TOKEN}
     data = {
@@ -238,9 +227,17 @@ async def create_check(amount: float):
                 return result["result"]["url"]
             return None
 
-# ========== ФОНОВЫЕ ЗАДАЧИ ==========
+async def update_balance(user_id: int, amount: float):
+    conn = await get_conn()
+    await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", amount, user_id)
+    await conn.close()
+
+async def mark_invoice_paid(invoice_id: str):
+    conn = await get_conn()
+    await conn.execute("UPDATE invoices SET status = 'paid' WHERE invoice_id = $1", invoice_id)
+    await conn.close()
+
 async def check_pending_invoices():
-    """Каждую секунду проверяет статусы неоплаченных счетов"""
     while True:
         try:
             await asyncio.sleep(1)
@@ -248,8 +245,6 @@ async def check_pending_invoices():
             pending = await conn.fetch("SELECT * FROM invoices WHERE status = 'pending' AND expires_at > NOW()")
             expired = await conn.fetch("SELECT * FROM invoices WHERE status = 'pending' AND expires_at <= NOW()")
             await conn.close()
-            
-            # Обработка просроченных счетов
             for inv in expired:
                 await bot.send_message(
                     inv["user_id"],
@@ -257,8 +252,6 @@ async def check_pending_invoices():
                     parse_mode="HTML"
                 )
                 await mark_invoice_paid(inv["invoice_id"])
-            
-            # Обработка оплаченных счетов
             for inv in pending:
                 status = await get_invoice_status(inv["invoice_id"])
                 if status == "paid":
@@ -274,14 +267,12 @@ async def check_pending_invoices():
             logging.error(f"Error in check_pending_invoices: {e}")
 
 async def check_expired_deals():
-    """Каждую секунду проверяет просроченные сделки"""
     while True:
         try:
             await asyncio.sleep(1)
             conn = await get_conn()
             expired_join = await conn.fetch("SELECT * FROM deals WHERE status = 'pending_join' AND expires_at <= NOW()")
             expired_payment = await conn.fetch("SELECT * FROM deals WHERE status = 'pending_payment' AND expires_at <= NOW()")
-            
             for deal in expired_join:
                 await conn.execute("UPDATE deals SET status = 'expired' WHERE deal_id = $1", deal["deal_id"])
                 await bot.send_message(
@@ -289,7 +280,6 @@ async def check_expired_deals():
                     f"<blockquote>❌ Сделка #{deal['deal_id']} закрыта\n\n• Партнёр не вступил в течение 5 минут\n• Создайте новую сделку</blockquote>",
                     parse_mode="HTML"
                 )
-            
             for deal in expired_payment:
                 await conn.execute("UPDATE deals SET status = 'payment_expired' WHERE deal_id = $1", deal["deal_id"])
                 await bot.send_message(
@@ -306,18 +296,6 @@ async def check_expired_deals():
         except Exception as e:
             logging.error(f"Error in check_expired_deals: {e}")
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
-async def update_balance(user_id: int, amount: float):
-    conn = await get_conn()
-    await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", amount, user_id)
-    await conn.close()
-
-async def mark_invoice_paid(invoice_id: str):
-    conn = await get_conn()
-    await conn.execute("UPDATE invoices SET status = 'paid' WHERE invoice_id = $1", invoice_id)
-    await conn.close()
-
-# ========== СДЕЛКИ (АВТОГАРАНТ) ==========
 async def create_deal(creator_id: int, creator_role: str, amount: float, conditions: str):
     conn = await get_conn()
     deal_id = generate_deal_id()
@@ -364,20 +342,15 @@ async def unfreeze_balance_to_seller(deal_id: str):
         await conn.execute("UPDATE deals SET status = 'completed' WHERE deal_id = $1", deal_id)
     await conn.close()
 
-# ========== ФОРМАТИРОВАНИЕ ПРОФИЛЯ ==========
 def format_profile(user):
-    """Форматирование профиля для ЛС бота (с кнопками)"""
     user_id = user["user_id"]
     username = user["username"] or str(user_id)
     virtual_id = user["virtual_id"] if user["virtual_id"] else user_id
-    
     total_reputation = user["reputation_positive"] + user["reputation_negative"]
     positive_percent = (user["reputation_positive"] / total_reputation * 100) if total_reputation > 0 else 0
     negative_percent = (user["reputation_negative"] / total_reputation * 100) if total_reputation > 0 else 0
-    
     registered_date = user["registered_at"].strftime("%d %B %Y года")
     registered_date_ru = registered_date.replace("January", "января").replace("February", "февраля").replace("March", "марта").replace("April", "апреля").replace("May", "мая").replace("June", "июня").replace("July", "июля").replace("August", "августа").replace("September", "сентября").replace("October", "октября").replace("November", "ноября").replace("December", "декабря")
-    
     text = (
         f"👤 @{username} [ ID: {virtual_id} ]\n\n"
         f"<blockquote>• <b><a href='callback://rep_{user_id}'>Репутация</a></b> {total_reputation}\n"
@@ -391,33 +364,6 @@ def format_profile(user):
     )
     return text
 
-def format_profile_group_no_link(user):
-    """Форматирование профиля для группы (без ссылки в тексте, только кнопка)"""
-    user_id = user["user_id"]
-    username = user["username"] or str(user_id)
-    virtual_id = user["virtual_id"] if user["virtual_id"] else user_id
-    
-    total_reputation = user["reputation_positive"] + user["reputation_negative"]
-    positive_percent = (user["reputation_positive"] / total_reputation * 100) if total_reputation > 0 else 0
-    negative_percent = (user["reputation_negative"] / total_reputation * 100) if total_reputation > 0 else 0
-    
-    registered_date = user["registered_at"].strftime("%d %B %Y года")
-    registered_date_ru = registered_date.replace("January", "января").replace("February", "февраля").replace("March", "марта").replace("April", "апреля").replace("May", "мая").replace("June", "июня").replace("July", "июля").replace("August", "августа").replace("September", "сентября").replace("October", "октября").replace("November", "ноября").replace("December", "декабря")
-    
-    text = (
-        f"👤 @{username} [ ID: {virtual_id} ]\n\n"
-        f"<blockquote>• <b>Репутация</b> {total_reputation}\n"
-        f"➕ • {positive_percent:.1f}%\n"
-        f"➖ • {negative_percent:.1f}%</blockquote>\n"
-        f"<blockquote><b>Депозит:</b> 🛟 ${float(user['deposit']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
-        f"<blockquote><b>Сделки:</b> 💰 {user['deals_count']} шт · ${float(user['deals_sum']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
-        f"<blockquote>❗️ <b>ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</b></blockquote>\n\n"
-        f"📅 В системе с {registered_date_ru}\n"
-        f"<blockquote><b>✅ АвтоГарант — @SHIFTrepbot</b></blockquote>"
-    )
-    return text
-
-# ========== КЛАВИАТУРЫ ==========
 def get_profile_keyboard(is_own_profile=True, target_user_id=None):
     if is_own_profile:
         return InlineKeyboardMarkup(inline_keyboard=[
@@ -456,18 +402,12 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text="🚪 Выйти", callback_data="admin_exit", style="danger")]
     ])
 
-# ========== ПАРСЕР ОТЗЫВОВ ==========
 def parse_review_command(text: str):
-    """Распознаёт +реп и -реп в любом месте сообщения, с пробелами или слитно"""
     text_lower = text.lower().strip()
-    
-    # Игнорируем числа слитно с +реп (500+реп)
     if re.search(r'\d\+реп', text_lower):
         return None
     if re.search(r'\d\+rep', text_lower):
         return None
-    
-    # Чёрный список слов в настоящем/будущем времени (реклама, не отзыв)
     blacklist = [
         r'\bвыдам\b', r'\bвыдаю\b', r'\bвыдадим\b',
         r'\bоплачу\b', r'\bоплачиваю\b', r'\bоплатим\b',
@@ -486,8 +426,6 @@ def parse_review_command(text: str):
     for word in blacklist:
         if re.search(word, text_lower):
             return None
-    
-    # Паттерны для распознавания
     patterns = [
         r'(\+реп|\-реп)\s+@?(\w+)(?:\s+(.+))?',
         r'@?(\w+)\s+(\+реп|\-реп)(?:\s+(.+))?',
@@ -506,7 +444,6 @@ def parse_review_command(text: str):
         r'(\+rep)(\d+)(?:\s+(.+))?',
         r'(\-rep)(\d+)(?:\s+(.+))?',
     ]
-    
     for pattern in patterns:
         match = re.search(pattern, text_lower, re.IGNORECASE)
         if match:
@@ -531,81 +468,9 @@ def parse_review_command(text: str):
                 return {'type': review_type, 'target': target, 'text': review_text.strip() if review_text else ''}
     return None
 
-# ========== ОСНОВНЫЕ ОБРАБОТЧИКИ ==========
-# ВАЖНО: ПОРЯДОК ОБРАБОТЧИКОВ ВАЖЕН!
-# 1. Команды (/start, /admin) — самые специфичные
-# 2. Callback queries
-# 3. Сообщения в группе (/и)
-# 4. Отзывы (+реп)
-# 5. Всё остальное
-
-# ---------- КОМАНДЫ ----------
-@dp.message(Command("start"))
-async def start(message: types.Message, state: FSMContext):
-    if message.chat.type != "private":
-        return
-    
-    args = message.text.split()
-    
-    # Обработка ссылки на сделку
-    if len(args) > 1 and args[1].startswith("deal_"):
-        deal_id = args[1].split("_")[1]
-        await deal_start(message, state, deal_id)
-        return
-    
-    # Обработка ссылки на профиль пользователя из группы
-    if len(args) > 1 and args[1].startswith("user_"):
-        target_user_id = int(args[1].split("_")[1])
-        conn = await get_conn()
-        user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", target_user_id)
-        await conn.close()
-        if user:
-            text = format_profile(user)
-            await message.answer(text, parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=False, target_user_id=target_user_id))
-        else:
-            await message.answer("<blockquote>❌ Пользователь не найден</blockquote>", parse_mode="HTML")
-        return
-    
-    # Обработка ссылки на репутацию (из кнопки ℹ️)
-    if len(args) > 1 and args[1].startswith("rep_user_"):
-        target_user_id = int(args[1].split("_")[2])
-        user = await get_user_by_id(target_user_id)
-        username = user["username"] if user else str(target_user_id)
-        await state.update_data(target_user_id=target_user_id, target_username=username)
-        text = f"<blockquote>Какую репутацию @{username} вы хотите посмотреть?</blockquote>"
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Все", callback_data=f"rep_type_all_{target_user_id}", style="primary")],
-            [InlineKeyboardButton(text="Положительные", callback_data=f"rep_type_positive_{target_user_id}", style="success"), InlineKeyboardButton(text="Отрицательные", callback_data=f"rep_type_negative_{target_user_id}", style="danger")],
-            [InlineKeyboardButton(text="Назад", callback_data="back_to_menu", style="primary")]
-        ])
-        await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
-        return
-    
-    # Обычный /start
-    user_id = message.from_user.id
-    username = message.from_user.username or str(user_id)
-    await get_or_create_user(user_id, username)
-    text = (
-        "<blockquote>🛡 SHIFT | РЕПУТАЦИЯ — система репутации и доверия.\n\n"
-        "• Проверяйте репутацию пользователей\n"
-        "• Проводите безопасные сделки\n"
-        "• Пользуйтесь гарантом\n\n"
-        "Выберите действие:</blockquote>"
-    )
-    await message.answer(text, parse_mode="HTML", reply_markup=get_main_keyboard())
-
-@dp.message(Command("admin"))
-async def admin_panel(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.delete()
-        return
-    await message.delete()
-    await message.answer("<b>🤖 Админ панель открыта!</b>", parse_mode="HTML", reply_markup=get_admin_keyboard())
-
-# ---------- ОБРАБОТЧИКИ ГРУППЫ (профиль через /и) ----------
+# ========== ЕДИНЫЙ ОБРАБОТЧИК ГРУППЫ ==========
 @dp.message()
-async def group_profile(message: types.Message):
-    # Только группы, не ЛС
+async def group_handler(message: types.Message):
     if message.chat.type == "private":
         return
     if not message.text:
@@ -618,13 +483,21 @@ async def group_profile(message: types.Message):
     username = message.from_user.username or str(user_id)
     await get_or_create_user(user_id, username)
     
-    # Проверяем, что сообщение начинается с /и
-    if not message.text.startswith("/и"):
+    text_lower = message.text.lower()
+    
+    # 1. Обработка профиля (/и)
+    if message.text.startswith("/и"):
+        await handle_group_profile(message)
         return
     
+    # 2. Обработка отзыва (+реп, -реп)
+    if any(x in text_lower for x in ['+реп', '-реп', '+rep', '-rep']):
+        await handle_group_review(message)
+        return
+
+async def handle_group_profile(message: types.Message):
     bot_username = (await bot.get_me()).username
     
-    # Определяем, чей профиль показывать
     target_user_id = None
     if message.reply_to_message:
         target_user_id = message.reply_to_message.from_user.id
@@ -647,41 +520,38 @@ async def group_profile(message: types.Message):
         await message.answer("<blockquote>❌ Пользователь не найден</blockquote>", parse_mode="HTML")
         return
     
-    text = format_profile_group_no_link(user)
+    virtual_id = user["virtual_id"] if user["virtual_id"] else user["user_id"]
+    username_display = user["username"] or str(user["user_id"])
+    total_reputation = user["reputation_positive"] + user["reputation_negative"]
+    positive_percent = (user["reputation_positive"] / total_reputation * 100) if total_reputation > 0 else 0
+    negative_percent = (user["reputation_negative"] / total_reputation * 100) if total_reputation > 0 else 0
+    registered_date = user["registered_at"].strftime("%d %B %Y года")
+    registered_date_ru = registered_date.replace("January", "января").replace("February", "февраля").replace("March", "марта").replace("April", "апреля").replace("May", "мая").replace("June", "июня").replace("July", "июля").replace("August", "августа").replace("September", "сентября").replace("October", "октября").replace("November", "ноября").replace("December", "декабря")
+    
+    text = (
+        f"👤 @{username_display} [ ID: {virtual_id} ]\n\n"
+        f"<blockquote>• <b>Репутация</b> {total_reputation}\n"
+        f"➕ • {positive_percent:.1f}%\n"
+        f"➖ • {negative_percent:.1f}%</blockquote>\n"
+        f"<blockquote><b>Депозит:</b> 🛟 ${float(user['deposit']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
+        f"<blockquote><b>Сделки:</b> 💰 {user['deals_count']} шт · ${float(user['deals_sum']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
+        f"<blockquote>❗️ <b>ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</b></blockquote>\n\n"
+        f"📅 В системе с {registered_date_ru}\n"
+        f"<blockquote><b>✅ АвтоГарант — @SHIFTrepbot</b></blockquote>"
+    )
+    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛟 Профиль", url=f"https://t.me/{bot_username}?start=user_{target_user_id}")]
     ])
+    
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
 
-# ---------- ОБРАБОТЧИК ОТЗЫВОВ (+реп, -реп) ----------
-@dp.message()
-async def handle_review_command(message: types.Message):
-    print(f"DEBUG: получил сообщение: {message.text}")
-    print(f"DEBUG: есть фото: {message.photo is not None}")
-    if not message.text:
-        return
-    text_lower = message.text.lower()
-    print(f"DEBUG: проверяю команду: {text_lower}")
-    if not any(x in text_lower for x in ['+реп', '-реп', '+rep', '-rep']):
-        return
-    print("DEBUG: команда распознана")
-    
-    # Авторегистрация пользователя
-    user_id = message.from_user.id
-    username = message.from_user.username or str(user_id)
-    await get_or_create_user(user_id, username)
-    
-    # Проверяем наличие команды
-    text_lower = message.text.lower()
-    if not any(x in text_lower for x in ['+реп', '-реп', '+rep', '-rep']):
-        return
-    
+async def handle_group_review(message: types.Message):
     # Фото обязательно
     if not message.photo:
         await message.answer("<blockquote>❌ Вы должны прикрепить фото к отзыву</blockquote>", parse_mode="HTML")
         return
     
-    # Парсим команду
     parsed = parse_review_command(message.text)
     if not parsed:
         await message.answer("<blockquote>❌ Неверный формат отзыва\n\nПримеры:\n+реп @username текст\n-реп 123456 текст</blockquote>", parse_mode="HTML")
@@ -693,7 +563,6 @@ async def handle_review_command(message: types.Message):
     photo_id = message.photo[-1].file_id
     from_user_id = message.from_user.id
     
-    # Определяем получателя
     if target.isdigit():
         target_user_id = int(target)
         target_user = await get_or_create_user(target_user_id, str(target_user_id))
@@ -706,19 +575,16 @@ async def handle_review_command(message: types.Message):
         target_user_id = target_user["user_id"]
         target_username = target_user["username"]
     
-    # Нельзя отзыв самому себе
     if from_user_id == target_user_id:
         await message.answer("<blockquote>❌ Нельзя оставить отзыв самому себе</blockquote>", parse_mode="HTML")
         return
     
-    # Сохраняем отзыв
     conn = await get_conn()
     await conn.execute(
         "INSERT INTO reviews (from_user_id, to_user_id, review_type, review_text, photo_id) VALUES ($1, $2, $3, $4, $5)",
         from_user_id, target_user_id, review_type, review_text, photo_id
     )
     
-    # Обновляем репутацию
     if review_type == "positive":
         await conn.execute("UPDATE users SET reputation_positive = reputation_positive + 1 WHERE user_id = $1", target_user_id)
         review_emoji = "👍"
@@ -729,108 +595,81 @@ async def handle_review_command(message: types.Message):
         review_text_display = "Отрицательный"
     await conn.close()
     
-    # Уведомление получателю в ЛС
     from_user = await get_user_by_id(from_user_id)
     from_username = from_user["username"] if from_user else str(from_user_id)
+    
     await bot.send_message(
         target_user_id,
         f"<blockquote>{review_emoji} Вы получили {review_text_display} отзыв от @{from_username}\n\n📝 {review_text}</blockquote>",
         parse_mode="HTML"
     )
     
-    # Ответ в группе (если сообщение из группы)
-    if message.chat.type != "private":
-        bot_username = (await bot.get_me()).username
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="ℹ️", url=f"https://t.me/{bot_username}?start=rep_user_{target_user_id}")]
-        ])
-        await message.answer("<blockquote>✅ Отзыв сохранен</blockquote>", parse_mode="HTML", reply_markup=keyboard)
-
-# ---------- ADMINS CALLBACKS ----------
-@dp.callback_query(lambda call: call.data == "admin_post")
-async def admin_post(call: types.CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
-        await call.answer("Доступ запрещен", show_alert=True)
-        return
-    await call.message.edit_text("<b>📢 Введите текст, фото, стикер или видео для рассылки:</b>", parse_mode="HTML")
-    await state.set_state(AdminStates.waiting_post)
-    await call.answer()
-
-@dp.callback_query(lambda call: call.data == "admin_stats")
-async def admin_stats(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
-        await call.answer("Доступ запрещен", show_alert=True)
-        return
-    conn = await get_conn()
-    total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
-    total_deals = await conn.fetchval("SELECT COUNT(*) FROM deals WHERE status = 'completed'")
-    total_deals_sum = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM deals WHERE status = 'completed'")
-    active_deals = await conn.fetchval("SELECT COUNT(*) FROM deals WHERE status IN ('pending_join', 'pending_payment', 'paid')")
-    disputed_deals = await conn.fetchval("SELECT COUNT(*) FROM deals WHERE status = 'disputed'")
-    await conn.close()
-    total_deals_sum = float(total_deals_sum) if total_deals_sum else 0
-    text = (
-        f"<b>📊 СТАТИСТИКА</b>\n\n"
-        f"👥 Пользователей: {total_users}\n"
-        f"✅ Завершённых сделок: {total_deals}\n"
-        f"💰 Объём завершённых сделок: {total_deals_sum:.2f} USDT\n"
-        f"⏳ Активных сделок: {active_deals}\n"
-        f"⚠️ Споров: {disputed_deals}"
-    )
+    bot_username = (await bot.get_me()).username
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back", style="primary")]
+        [InlineKeyboardButton(text="ℹ️", url=f"https://t.me/{bot_username}?start=rep_user_{target_user_id}")]
     ])
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
-    await call.answer()
+    await message.answer("<blockquote>✅ Отзыв сохранен</blockquote>", parse_mode="HTML", reply_markup=keyboard)
 
-@dp.callback_query(lambda call: call.data == "admin_back")
-async def admin_back(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
-        await call.answer("Доступ запрещен", show_alert=True)
+# ========== ОСНОВНЫЕ КОМАНДЫ ==========
+@dp.message(Command("start"))
+async def start(message: types.Message, state: FSMContext):
+    if message.chat.type != "private":
         return
-    await call.message.edit_text("<b>🤖 Админ панель открыта!</b>", parse_mode="HTML", reply_markup=get_admin_keyboard())
-    await call.answer()
-
-@dp.callback_query(lambda call: call.data == "admin_exit")
-async def admin_exit(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
-        await call.answer("Доступ запрещен", show_alert=True)
+    
+    args = message.text.split()
+    
+    if len(args) > 1 and args[1].startswith("deal_"):
+        deal_id = args[1].split("_")[1]
+        await deal_start(message, state, deal_id)
         return
-    await call.message.delete()
-    await call.answer()
+    
+    if len(args) > 1 and args[1].startswith("user_"):
+        target_user_id = int(args[1].split("_")[1])
+        conn = await get_conn()
+        user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", target_user_id)
+        await conn.close()
+        if user:
+            text = format_profile(user)
+            await message.answer(text, parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=False, target_user_id=target_user_id))
+        else:
+            await message.answer("<blockquote>❌ Пользователь не найден</blockquote>", parse_mode="HTML")
+        return
+    
+    if len(args) > 1 and args[1].startswith("rep_user_"):
+        target_user_id = int(args[1].split("_")[2])
+        user = await get_user_by_id(target_user_id)
+        username = user["username"] if user else str(target_user_id)
+        await state.update_data(target_user_id=target_user_id, target_username=username)
+        text = f"<blockquote>Какую репутацию @{username} вы хотите посмотреть?</blockquote>"
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Все", callback_data=f"rep_type_all_{target_user_id}", style="primary")],
+            [InlineKeyboardButton(text="Положительные", callback_data=f"rep_type_positive_{target_user_id}", style="success"), InlineKeyboardButton(text="Отрицательные", callback_data=f"rep_type_negative_{target_user_id}", style="danger")],
+            [InlineKeyboardButton(text="Назад", callback_data="back_to_menu", style="primary")]
+        ])
+        await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+        return
+    
+    user_id = message.from_user.id
+    username = message.from_user.username or str(user_id)
+    await get_or_create_user(user_id, username)
+    text = (
+        "<blockquote>🛡 SHIFT | РЕПУТАЦИЯ — система репутации и доверия.\n\n"
+        "• Проверяйте репутацию пользователей\n"
+        "• Проводите безопасные сделки\n"
+        "• Пользуйтесь гарантом\n\n"
+        "Выберите действие:</blockquote>"
+    )
+    await message.answer(text, parse_mode="HTML", reply_markup=get_main_keyboard())
 
-@dp.message(AdminStates.waiting_post)
-async def admin_send_post(message: types.Message, state: FSMContext):
+@dp.message(Command("admin"))
+async def admin_panel(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         await message.delete()
         return
-    await state.clear()
-    conn = await get_conn()
-    users = await conn.fetch("SELECT user_id FROM users")
-    await conn.close()
-    success = 0
-    fail = 0
-    await message.answer("<b>📢 Начинаю рассылку...</b>", parse_mode="HTML")
-    for user in users:
-        try:
-            if message.text:
-                await bot.send_message(user["user_id"], message.text, parse_mode="HTML")
-            elif message.photo:
-                await bot.send_photo(user["user_id"], message.photo[-1].file_id, caption=message.caption, parse_mode="HTML")
-            elif message.sticker:
-                await bot.send_sticker(user["user_id"], message.sticker.file_id)
-            elif message.video:
-                await bot.send_video(user["user_id"], message.video.file_id, caption=message.caption, parse_mode="HTML")
-            elif message.document:
-                await bot.send_document(user["user_id"], message.document.file_id, caption=message.caption, parse_mode="HTML")
-            success += 1
-        except Exception:
-            fail += 1
-        await asyncio.sleep(0.05)
-    await message.answer(f"<b>✅ Рассылка завершена!</b>\n\n📨 Доставлено: {success}\n❌ Ошибок: {fail}", parse_mode="HTML")
+    await message.delete()
     await message.answer("<b>🤖 Админ панель открыта!</b>", parse_mode="HTML", reply_markup=get_admin_keyboard())
 
-# ========== ОСНОВНЫЕ КНОПКИ БОТА ==========
+# ========== CALLBACK QUERIES ==========
 @dp.callback_query(lambda call: call.data == "profile")
 async def profile(call: types.CallbackQuery):
     user_id = call.from_user.id
@@ -1031,7 +870,7 @@ async def autogarant(call: types.CallbackQuery):
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_autogarant_keyboard())
     await call.answer()
 
-# ========== МОИ СДЕЛКИ (ПАГИНАЦИЯ) ==========
+# ========== МОИ СДЕЛКИ ==========
 @dp.callback_query(lambda call: call.data == "my_deals")
 async def my_deals(call: types.CallbackQuery, state: FSMContext):
     await state.clear()
@@ -1497,7 +1336,7 @@ async def open_dispute(call: types.CallbackQuery):
     )
     await call.answer()
 
-# ========== РЕПУТАЦИЯ (ОТЗЫВЫ) ==========
+# ========== РЕПУТАЦИЯ ==========
 @dp.callback_query(lambda call: call.data.startswith("rep_action_"))
 async def rep_action(call: types.CallbackQuery, state: FSMContext):
     target_user_id = int(call.data.split("_")[2])
@@ -1674,6 +1513,90 @@ async def back_to_profile(call: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(lambda call: call.data == "ignore")
 async def ignore(call: types.CallbackQuery):
     await call.answer()
+
+# ========== АДМИНКА ==========
+@dp.callback_query(lambda call: call.data == "admin_post")
+async def admin_post(call: types.CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+    await call.message.edit_text("<b>📢 Введите текст, фото, стикер или видео для рассылки:</b>", parse_mode="HTML")
+    await state.set_state(AdminStates.waiting_post)
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data == "admin_stats")
+async def admin_stats(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+    conn = await get_conn()
+    total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
+    total_deals = await conn.fetchval("SELECT COUNT(*) FROM deals WHERE status = 'completed'")
+    total_deals_sum = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM deals WHERE status = 'completed'")
+    active_deals = await conn.fetchval("SELECT COUNT(*) FROM deals WHERE status IN ('pending_join', 'pending_payment', 'paid')")
+    disputed_deals = await conn.fetchval("SELECT COUNT(*) FROM deals WHERE status = 'disputed'")
+    await conn.close()
+    total_deals_sum = float(total_deals_sum) if total_deals_sum else 0
+    text = (
+        f"<b>📊 СТАТИСТИКА</b>\n\n"
+        f"👥 Пользователей: {total_users}\n"
+        f"✅ Завершённых сделок: {total_deals}\n"
+        f"💰 Объём завершённых сделок: {total_deals_sum:.2f} USDT\n"
+        f"⏳ Активных сделок: {active_deals}\n"
+        f"⚠️ Споров: {disputed_deals}"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back", style="primary")]
+    ])
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data == "admin_back")
+async def admin_back(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+    await call.message.edit_text("<b>🤖 Админ панель открыта!</b>", parse_mode="HTML", reply_markup=get_admin_keyboard())
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data == "admin_exit")
+async def admin_exit(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+    await call.message.delete()
+    await call.answer()
+
+@dp.message(AdminStates.waiting_post)
+async def admin_send_post(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await message.delete()
+        return
+    await state.clear()
+    conn = await get_conn()
+    users = await conn.fetch("SELECT user_id FROM users")
+    await conn.close()
+    success = 0
+    fail = 0
+    await message.answer("<b>📢 Начинаю рассылку...</b>", parse_mode="HTML")
+    for user in users:
+        try:
+            if message.text:
+                await bot.send_message(user["user_id"], message.text, parse_mode="HTML")
+            elif message.photo:
+                await bot.send_photo(user["user_id"], message.photo[-1].file_id, caption=message.caption, parse_mode="HTML")
+            elif message.sticker:
+                await bot.send_sticker(user["user_id"], message.sticker.file_id)
+            elif message.video:
+                await bot.send_video(user["user_id"], message.video.file_id, caption=message.caption, parse_mode="HTML")
+            elif message.document:
+                await bot.send_document(user["user_id"], message.document.file_id, caption=message.caption, parse_mode="HTML")
+            success += 1
+        except Exception:
+            fail += 1
+        await asyncio.sleep(0.05)
+    await message.answer(f"<b>✅ Рассылка завершена!</b>\n\n📨 Доставлено: {success}\n❌ Ошибок: {fail}", parse_mode="HTML")
+    await message.answer("<b>🤖 Админ панель открыта!</b>", parse_mode="HTML", reply_markup=get_admin_keyboard())
 
 async def main():
     await init_db()
