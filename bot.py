@@ -391,6 +391,31 @@ def format_profile(user):
     )
     return text
 
+def format_profile_group_no_link(user):
+    user_id = user["user_id"]
+    username = user["username"] or str(user_id)
+    virtual_id = user["virtual_id"] if user["virtual_id"] else user_id
+    
+    total_reputation = user["reputation_positive"] + user["reputation_negative"]
+    positive_percent = (user["reputation_positive"] / total_reputation * 100) if total_reputation > 0 else 0
+    negative_percent = (user["reputation_negative"] / total_reputation * 100) if total_reputation > 0 else 0
+    
+    registered_date = user["registered_at"].strftime("%d %B %Y года")
+    registered_date_ru = registered_date.replace("January", "января").replace("February", "февраля").replace("March", "марта").replace("April", "апреля").replace("May", "мая").replace("June", "июня").replace("July", "июля").replace("August", "августа").replace("September", "сентября").replace("October", "октября").replace("November", "ноября").replace("December", "декабря")
+    
+    text = (
+        f"👤 @{username} [ ID: {virtual_id} ]\n\n"
+        f"<blockquote>• <b>Репутация</b> {total_reputation}\n"
+        f"➕ • {positive_percent:.1f}%\n"
+        f"➖ • {negative_percent:.1f}%</blockquote>\n"
+        f"<blockquote><b>Депозит:</b> 🛟 ${float(user['deposit']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
+        f"<blockquote><b>Сделки:</b> 💰 {user['deals_count']} шт · ${float(user['deals_sum']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
+        f"<blockquote>❗️ <b>ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</b></blockquote>\n\n"
+        f"📅 В системе с {registered_date_ru}\n"
+        f"<blockquote><b>✅ АвтоГарант — @SHIFTrepbot</b></blockquote>"
+    )
+    return text
+
 def get_profile_keyboard(is_own_profile=True, target_user_id=None):
     if is_own_profile:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -520,6 +545,16 @@ def parse_review_command(text: str):
     
     return None
 
+@dp.message()
+async def auto_register_user(message: types.Message):
+    if message.chat.type == "private":
+        return
+    
+    user_id = message.from_user.id
+    username = message.from_user.username or str(user_id)
+    
+    await get_or_create_user(user_id, username)
+
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext):
     if message.chat.type != "private":
@@ -624,46 +659,23 @@ async def group_profile(message: types.Message):
     
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
 
-def format_profile_group_no_link(user):
-    user_id = user["user_id"]
-    username = user["username"] or str(user_id)
-    virtual_id = user["virtual_id"] if user["virtual_id"] else user_id
-    
-    total_reputation = user["reputation_positive"] + user["reputation_negative"]
-    positive_percent = (user["reputation_positive"] / total_reputation * 100) if total_reputation > 0 else 0
-    negative_percent = (user["reputation_negative"] / total_reputation * 100) if total_reputation > 0 else 0
-    
-    registered_date = user["registered_at"].strftime("%d %B %Y года")
-    registered_date_ru = registered_date.replace("January", "января").replace("February", "февраля").replace("March", "марта").replace("April", "апреля").replace("May", "мая").replace("June", "июня").replace("July", "июля").replace("August", "августа").replace("September", "сентября").replace("October", "октября").replace("November", "ноября").replace("December", "декабря")
-    
-    text = (
-        f"👤 @{username} [ ID: {virtual_id} ]\n\n"
-        f"<blockquote>• <b>Репутация</b> {total_reputation}\n"
-        f"➕ • {positive_percent:.1f}%\n"
-        f"➖ • {negative_percent:.1f}%</blockquote>\n"
-        f"<blockquote><b>Депозит:</b> 🛟 ${float(user['deposit']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
-        f"<blockquote><b>Сделки:</b> 💰 {user['deals_count']} шт · ${float(user['deals_sum']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
-        f"<blockquote>❗️ <b>ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</b></blockquote>\n\n"
-        f"📅 В системе с {registered_date_ru}\n"
-        f"<blockquote><b>✅ АвтоГарант — @SHIFTrepbot</b></blockquote>"
-    )
-    return text
-
 @dp.message()
 async def handle_review_command(message: types.Message):
     if not message.text:
-        return
-    
-    if not message.photo:
         return
     
     text_lower = message.text.lower()
     if not any(x in text_lower for x in ['+реп', '-реп', '+rep', '-rep']):
         return
     
+    if not message.photo:
+        await message.answer("<blockquote>❌ Вы должны прикрепить фото к отзыву</blockquote>", parse_mode="HTML")
+        return
+    
     parsed = parse_review_command(message.text)
     
     if not parsed:
+        await message.answer("<blockquote>❌ Неверный формат отзыва\n\nПримеры:\n+реп @username текст\n-реп 123456 текст</blockquote>", parse_mode="HTML")
         return
     
     target = parsed['target']
