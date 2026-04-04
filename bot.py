@@ -671,21 +671,21 @@ async def start(message: types.Message, state: FSMContext):
     print(f"DEBUG [start]: вызван")
     
     if message.chat.type != "private":
-        user_id = message.from_user.id
-username = message.from_user.username or str(user_id)
         return
     
     user_id = message.from_user.id
+    username = message.from_user.username or str(user_id)
     
     # Проверка подписки
-    if not await check_subscription(user_id):
-        text = "🔑 <b>Чтобы воспользоваться ботом, необходимо присоединиться к группе</b>"
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📢 Присоединиться", url=GROUP_LINK)],
-            [InlineKeyboardButton(text="✅ Проверить", callback_data="check_subscription")]
-        ])
-        await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
-        return
+    if GROUP_ID and GROUP_LINK:
+        if not await check_subscription(user_id):
+            text = "🔑 <b>Чтобы воспользоваться ботом, необходимо присоединиться к группе</b>"
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📢 Присоединиться", url=GROUP_LINK)],
+                [InlineKeyboardButton(text="✅ Проверить", callback_data="check_subscription")]
+            ])
+            await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+            return
     
     args = message.text.split()
     
@@ -709,9 +709,9 @@ username = message.from_user.username or str(user_id)
     if len(args) > 1 and args[1].startswith("rep_user_"):
         target_user_id = int(args[1].split("_")[2])
         user = await get_user_by_id(target_user_id)
-        username = user["username"] if user else str(target_user_id)
-        await state.update_data(target_user_id=target_user_id, target_username=username)
-        text = f"<blockquote>Какую репутацию @{username} вы хотите посмотреть?</blockquote>"
+        username_target = user["username"] if user else str(target_user_id)
+        await state.update_data(target_user_id=target_user_id, target_username=username_target)
+        text = f"<blockquote>Какую репутацию @{username_target} вы хотите посмотреть?</blockquote>"
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Все", callback_data=f"rep_type_all_{target_user_id}", style="primary")],
             [InlineKeyboardButton(text="Положительные", callback_data=f"rep_type_positive_{target_user_id}", style="success"), InlineKeyboardButton(text="Отрицательные", callback_data=f"rep_type_negative_{target_user_id}", style="danger")],
