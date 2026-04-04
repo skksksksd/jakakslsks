@@ -402,14 +402,19 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text="🚪 Выйти", callback_data="admin_exit", style="danger")]
     ])
 
+# ========== НОВЫЙ УМНЫЙ ПАРСЕР (поддерживает любые форматы, включая слитные) ==========
 def parse_review_command(text: str):
     text_lower = text.lower().strip()
-    if re.search(r'\d\+реп', text_lower):
-        return None
-    if re.search(r'\d\+rep', text_lower):
+    
+    # Защита от ложных срабатываний
+    if re.search(r'\d\+реп', text_lower) or re.search(r'\d\+rep', text_lower):
         return None
     
     patterns = [
+        # Слитное: @username+реп или @username-реп
+        r'@(\w+)(\+реп|\-реп)(?:\s+(.+))?',
+        r'@(\w+)(\+rep|\-rep)(?:\s+(.+))?',
+        # Обычные форматы
         r'(\+реп|\-реп)\s+@?(\w+)(?:\s+(.+))?',
         r'@?(\w+)\s+(\+реп|\-реп)(?:\s+(.+))?',
         r'(\+реп|\-реп)\s+(\d+)(?:\s+(.+))?',
@@ -418,20 +423,24 @@ def parse_review_command(text: str):
         r'@?(\w+)\s+(\+rep|\-rep)(?:\s+(.+))?',
         r'(\+rep|\-rep)\s+(\d+)(?:\s+(.+))?',
         r'(\d+)\s+(\+rep|\-rep)(?:\s+(.+))?',
-        r'@(\w+)\+реп(?:\s+(.+))?',
-        r'@(\w+)\-реп(?:\s+(.+))?',
-        r'@(\w+)\+rep(?:\s+(.+))?',
-        r'@(\w+)\-rep(?:\s+(.+))?',
-        r'(\+реп)(\d+)(?:\s+(.+))?',
-        r'(\-реп)(\d+)(?:\s+(.+))?',
-        r'(\+rep)(\d+)(?:\s+(.+))?',
-        r'(\-rep)(\d+)(?:\s+(.+))?',
+        # Без @
+        r'(\w+)(\+реп|\-реп)(?:\s+(.+))?',
+        r'(\w+)(\+rep|\-rep)(?:\s+(.+))?',
     ]
     
     for pattern in patterns:
         match = re.search(pattern, text_lower, re.IGNORECASE)
         if match:
             groups = match.groups()
+            
+            # Слитное написание: @username+rep
+            if len(groups) >= 2 and groups[1] in ['+реп', '+rep', '-реп', '-rep']:
+                review_type = 'positive' if groups[1] in ['+реп', '+rep'] else 'negative'
+                target = groups[0]
+                review_text = groups[2] if len(groups) > 2 and groups[2] else ''
+                return {'type': review_type, 'target': target, 'text': review_text.strip()}
+            
+            # Обычные форматы с 3 группами
             if len(groups) == 3:
                 if groups[0] in ['+реп', '+rep', '-реп', '-rep']:
                     review_type = 'positive' if groups[0] in ['+реп', '+rep'] else 'negative'
@@ -445,11 +454,15 @@ def parse_review_command(text: str):
                     continue
                 target = target.replace('@', '')
                 return {'type': review_type, 'target': target, 'text': review_text.strip() if review_text else ''}
+            
+            # Форматы с 2 группами
             elif len(groups) == 2:
                 target = groups[0]
                 review_text = groups[1] if groups[1] else ''
                 review_type = 'positive' if ('+реп' in text_lower or '+rep' in text_lower) else 'negative'
+                target = target.replace('@', '')
                 return {'type': review_type, 'target': target, 'text': review_text.strip() if review_text else ''}
+    
     return None
 
 async def handle_group_profile(message: types.Message):
@@ -509,6 +522,7 @@ async def handle_group_profile(message: types.Message):
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     print("DEBUG [handle_group_profile]: профиль отправлен")
 
+# ========== ИСПРАВЛЕННАЯ ФУНКЦИЯ ДЛЯ ОТЗЫВОВ (учитывает пересылки) ==========
 async def handle_group_review(message: types.Message):
     print(f"DEBUG [handle_group_review]: начал, текст: {message.text or message.caption}")
     
@@ -522,9 +536,23 @@ async def handle_group_review(message: types.Message):
     target = parsed['target']
     review_type = parsed['type']
     review_text = parsed['text']
-    from_user_id = message.from_user.id
     
-    print(f"DEBUG: target={target}, review_type={review_type}, from_user={from_user_id}")
+    # ОПРЕДЕЛЯЕМ РЕАЛЬНОГО АВТОРА (учитываем пересылку)
+    if message.forward_from:
+        # Переслано от конкретного пользователя
+        from_user_id = message.forward_from.id
+        from_username = message.forward_from.username or str(from_user_id)
+        print(f"DEBUG: переслано от пользователя: {from_user_id}")
+    elif message.forward_sender_name:
+        # Переслано от скрытого пользователя
+        await message.reply("<blockquote>❌ Нельзя пересылать отзывы от скрытых пользователей</blockquote>", parse_mode="HTML")
+        return
+    else:
+        # Обычное сообщение (не пересланное)
+        from_user_id = message.from_user.id
+        from_username = message.from_user.username or str(from_user_id)
+    
+    print(f"DEBUG: from_user_id={from_user_id}, target={target}, review_type={review_type}")
     
     # Определяем получателя
     if target.isdigit():
@@ -542,7 +570,7 @@ async def handle_group_review(message: types.Message):
         target_username = target_user["username"]
         print(f"DEBUG: получатель по username: {target_user_id}")
     
-    # Нельзя себе
+    # Проверка: нельзя оставить отзыв самому себе (сравниваем реального автора и получателя)
     if from_user_id == target_user_id:
         print("DEBUG: нельзя себе")
         await message.reply("<blockquote>❌ Нельзя оставить отзыв самому себе</blockquote>", parse_mode="HTML")
@@ -557,7 +585,7 @@ async def handle_group_review(message: types.Message):
     photo_id = message.photo[-1].file_id
     print(f"DEBUG: фото есть, id={photo_id}")
     
-    # Сохраняем
+    # Сохраняем отзыв
     conn = await get_conn()
     await conn.execute(
         "INSERT INTO reviews (from_user_id, to_user_id, review_type, review_text, photo_id) VALUES ($1, $2, $3, $4, $5)",
@@ -575,9 +603,7 @@ async def handle_group_review(message: types.Message):
     await conn.close()
     print("DEBUG: отзыв сохранён")
     
-    from_user = await get_user_by_id(from_user_id)
-    from_username = from_user["username"] if from_user else str(from_user_id)
-    
+    # Уведомляем получателя
     await bot.send_message(
         target_user_id,
         f"<blockquote>{review_emoji} Вы получили {review_text_display} отзыв от @{from_username}\n\n📝 {review_text}</blockquote>",
@@ -606,11 +632,20 @@ async def handle_all_messages(message: types.Message, state: FSMContext):
     
     # ЛИЧНЫЕ СООБЩЕНИЯ
     if message.chat.type == "private":
-        if message.text:
-            if message.text.startswith("/start"):
-                await start(message, state)
-            elif message.text.startswith("/admin"):
-                await admin_panel(message)
+        if not message.text:
+            return
+        
+        # Проверяем, не находимся ли мы в состоянии поиска
+        current_state = await state.get_state()
+        if current_state == SearchStates.waiting_search:
+            await process_search(message, state)
+            return
+        
+        # Обработка команд
+        if message.text.startswith("/start"):
+            await start(message, state)
+        elif message.text.startswith("/admin"):
+            await admin_panel(message)
         return
     
     # ГРУППОВЫЕ СООБЩЕНИЯ
@@ -633,15 +668,6 @@ async def handle_all_messages(message: types.Message, state: FSMContext):
             if not message.photo:
                 await message.reply("<blockquote>❌ Для отзыва необходимо прикрепить скриншот/доказательство сделки</blockquote>", parse_mode="HTML")
                 return
-            
-            # Проверка: отзыв на себя
-            parsed = parse_review_command(text_content)
-            if parsed:
-                target = parsed['target']
-                target_user = await find_user_by_query(f"@{target}") if not target.isdigit() else await get_or_create_user(int(target), target)
-                if target_user and target_user["user_id"] == user_id:
-                    await message.reply("<blockquote>❌ Нельзя оставить отзыв самому себе</blockquote>", parse_mode="HTML")
-                    return
             
             await handle_group_review(message)
             return
