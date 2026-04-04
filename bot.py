@@ -510,9 +510,9 @@ async def handle_group_profile(message: types.Message):
     print("DEBUG [handle_group_profile]: профиль отправлен")
 
 async def handle_group_review(message: types.Message):
-    print(f"DEBUG [handle_group_review]: начал, текст: {message.text}")
+    print(f"DEBUG [handle_group_review]: начал, текст: {message.text or message.caption}")
     
-    parsed = parse_review_command(message.text)
+    parsed = parse_review_command(message.text or message.caption or "")
     if not parsed:
         print("DEBUG: парсер не распознал команду")
         return
@@ -536,6 +536,7 @@ async def handle_group_review(message: types.Message):
         target_user = await find_user_by_query(f"@{target}")
         if not target_user:
             print("DEBUG: пользователь не найден по username")
+            await message.reply("<blockquote>❌ Пользователь не найден</blockquote>", parse_mode="HTML")
             return
         target_user_id = target_user["user_id"]
         target_username = target_user["username"]
@@ -544,11 +545,13 @@ async def handle_group_review(message: types.Message):
     # Нельзя себе
     if from_user_id == target_user_id:
         print("DEBUG: нельзя себе")
+        await message.reply("<blockquote>❌ Нельзя оставить отзыв самому себе</blockquote>", parse_mode="HTML")
         return
     
     # Фото обязательно
     if not message.photo:
         print("DEBUG: нет фото")
+        await message.reply("<blockquote>❌ Для отзыва необходимо прикрепить скриншот/доказательство сделки</blockquote>", parse_mode="HTML")
         return
     
     photo_id = message.photo[-1].file_id
@@ -596,36 +599,52 @@ async def handle_all_messages(message: types.Message, state: FSMContext):
     if message.from_user.is_bot:
         return
     
-    # Авторегистрация для всех пользователей (и в ЛС, и в группах)
+    # Авторегистрация для всех пользователей
     user_id = message.from_user.id
     username = message.from_user.username or str(user_id)
     await get_or_create_user(user_id, username)
     
     # ЛИЧНЫЕ СООБЩЕНИЯ
     if message.chat.type == "private":
-        if not message.text:
-            return
-        
-        # Обработка команд
-        if message.text.startswith("/start"):
-            await start(message, state)
-        elif message.text.startswith("/admin"):
-            await admin_panel(message)
-        # Здесь можно добавить другие команды для ЛС если нужно
+        if message.text:
+            if message.text.startswith("/start"):
+                await start(message, state)
+            elif message.text.startswith("/admin"):
+                await admin_panel(message)
         return
     
     # ГРУППОВЫЕ СООБЩЕНИЯ
     if message.chat.type in ["group", "supergroup"]:
-        if not message.text:
+        # Получаем текст из правильного места
+        text_content = message.text or message.caption or ""
+        
+        if not text_content:
             return
         
         # Обработка команды /и
-        if message.text.startswith("/и"):
+        if text_content.startswith("/и"):
             await handle_group_profile(message)
+            return
+        
         # Обработка отзывов
-        elif any(x in message.text.lower() for x in ['+реп', '-реп', '+rep', '-rep']):
+        text_lower = text_content.lower()
+        if any(x in text_lower for x in ['+реп', '-реп', '+rep', '-rep']):
+            # Проверка: есть ли фото
+            if not message.photo:
+                await message.reply("<blockquote>❌ Для отзыва необходимо прикрепить скриншот/доказательство сделки</blockquote>", parse_mode="HTML")
+                return
+            
+            # Проверка: отзыв на себя
+            parsed = parse_review_command(text_content)
+            if parsed:
+                target = parsed['target']
+                target_user = await find_user_by_query(f"@{target}") if not target.isdigit() else await get_or_create_user(int(target), target)
+                if target_user and target_user["user_id"] == user_id:
+                    await message.reply("<blockquote>❌ Нельзя оставить отзыв самому себе</blockquote>", parse_mode="HTML")
+                    return
+            
             await handle_group_review(message)
-        return
+            return
 
 # ========== ОСНОВНЫЕ КОМАНДЫ ==========
 @dp.message(Command("start"))
@@ -1460,13 +1479,24 @@ async def show_reviews_page(call, state, target_user_id, review_type, page, user
     nav_buttons = []
     if page > 0:
         nav_buttons.append(InlineKeyboardButton(text="Назад", callback_data=f"rep_page_{page-1}"))
-    nav_buttons.append(InlineKeyboardButton(text=f"{page+1}/{((total-1)//limit)+1}", callback_data="ignore"))
+    total_pages = (total + limit - 1) // limit
+    nav_buttons.append(InlineKeyboardButton(text=f"{page+1}/{total_pages}", callback_data="ignore"))
     if (page + 1) * limit < total:
         nav_buttons.append(InlineKeyboardButton(text="Вперед", callback_data=f"rep_page_{page+1}"))
     keyboard_buttons.append(nav_buttons)
     keyboard_buttons.append([InlineKeyboardButton(text="Вернуться", callback_data=f"rep_action_{target_user_id}", style="primary")])
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    
+    # Безопасное редактирование сообщения
+    try:
+        if call.message.text:
+            await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+        else:
+            await call.message.delete()
+            await call.message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+    except Exception as e:
+        logging.error(f"Ошибка при редактировании сообщения: {e}")
+        await call.message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     await call.answer()
 
 @dp.callback_query(lambda call: call.data.startswith("rep_page_"))
