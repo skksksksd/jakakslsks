@@ -4,6 +4,7 @@ import logging
 import asyncpg
 import random
 import aiohttp
+import re
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -390,6 +391,32 @@ def format_profile(user):
     )
     return text
 
+def format_profile_group(user):
+    user_id = user["user_id"]
+    username = user["username"] or str(user_id)
+    virtual_id = user["virtual_id"] if user["virtual_id"] else user_id
+    
+    total_reputation = user["reputation_positive"] + user["reputation_negative"]
+    positive_percent = (user["reputation_positive"] / total_reputation * 100) if total_reputation > 0 else 0
+    negative_percent = (user["reputation_negative"] / total_reputation * 100) if total_reputation > 0 else 0
+    
+    registered_date = user["registered_at"].strftime("%d %B %Y года")
+    registered_date_ru = registered_date.replace("January", "января").replace("February", "февраля").replace("March", "марта").replace("April", "апреля").replace("May", "мая").replace("June", "июня").replace("July", "июля").replace("August", "августа").replace("September", "сентября").replace("October", "октября").replace("November", "ноября").replace("December", "декабря")
+    
+    text = (
+        f"👤 @{username} [ ID: {virtual_id} ]\n\n"
+        f"<blockquote>• <b>Репутация</b> {total_reputation}\n"
+        f"➕ • {positive_percent:.1f}%\n"
+        f"➖ • {negative_percent:.1f}%</blockquote>\n"
+        f"<blockquote><b>Депозит:</b> 🛟 ${float(user['deposit']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
+        f"<blockquote><b>Сделки:</b> 💰 {user['deals_count']} шт · ${float(user['deals_sum']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
+        f"<blockquote>❗️ <b>ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</b></blockquote>\n\n"
+        f"📅 В системе с {registered_date_ru}\n"
+        f"<blockquote><b>✅ АвтоГарант — @SHIFTrepbot</b></blockquote>\n\n"
+        f"🔗 <a href='https://t.me/{bot.username}?start=user_{user_id}'>🛟 Профиль</a>"
+    )
+    return text
+
 def get_profile_keyboard(is_own_profile=True, target_user_id=None):
     if is_own_profile:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -442,6 +469,19 @@ async def start(message: types.Message, state: FSMContext):
         await deal_start(message, state, deal_id)
         return
     
+    if len(args) > 1 and args[1].startswith("user_"):
+        target_user_id = int(args[1].split("_")[1])
+        conn = await get_conn()
+        user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", target_user_id)
+        await conn.close()
+        if user:
+            text = format_profile(user)
+            is_own = (user["user_id"] == message.from_user.id)
+            await message.answer(text, parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=is_own, target_user_id=target_user_id))
+        else:
+            await message.answer("<blockquote>❌ Пользователь не найден</blockquote>", parse_mode="HTML")
+        return
+    
     user_id = message.from_user.id
     username = message.from_user.username or str(user_id)
     
@@ -456,39 +496,6 @@ async def start(message: types.Message, state: FSMContext):
     )
     await message.answer(text, parse_mode="HTML", reply_markup=get_main_keyboard())
 
-async def deal_start(message: types.Message, state: FSMContext, deal_id: str):
-    deal = await get_deal(deal_id)
-    
-    if not deal or deal["status"] != "pending_join":
-        await message.answer("<blockquote>❌ Сделка не найдена или уже завершена\n\n• Проверьте ссылку\n• Сделка могла быть уже принята</blockquote>", parse_mode="HTML")
-        return
-    
-    user_id = message.from_user.id
-    
-    if user_id == deal["creator_id"]:
-        await message.answer("<blockquote>❌ Вы не можете присоединиться к своей сделке\n\n• Отправьте ссылку партнёру</blockquote>", parse_mode="HTML")
-        return
-    
-    await state.update_data(deal_id=deal_id, amount=deal["amount"], amount_with_fee=deal["amount_with_fee"], conditions=deal["conditions"], creator_role=deal["creator_role"])
-    
-    your_role = "Продавец" if deal["creator_role"] == "buyer" else "Покупатель"
-    
-    text = (
-        f"<blockquote>📩 ПРИГЛАШЕНИЕ В СДЕЛКУ #{deal_id}\n\n"
-        f"• Ваша роль: {your_role}\n"
-        f"• Сумма: {float(deal['amount']):.2f} USDT\n\n"
-        f"📝 УСЛОВИЯ:\n{deal['conditions']}\n\n"
-        f"Подтвердите участие, чтобы продолжить.</blockquote>"
-    )
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Принять сделку", callback_data="accept_deal", style="success")],
-        [InlineKeyboardButton(text="❌ Отклонить", callback_data="reject_deal", style="danger")]
-    ])
-    
-    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
-    await state.set_state(DealStates.waiting_accept)
-
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -497,6 +504,42 @@ async def admin_panel(message: types.Message):
     
     await message.delete()
     await message.answer("<b>🤖 Админ панель открыта!</b>", parse_mode="HTML", reply_markup=get_admin_keyboard())
+
+@dp.message(lambda message: message.text and message.text.startswith("/и"))
+async def group_profile(message: types.Message):
+    if message.chat.type == "private":
+        return
+    
+    target_user_id = None
+    
+    if message.reply_to_message:
+        target_user_id = message.reply_to_message.from_user.id
+    else:
+        parts = message.text.split()
+        if len(parts) > 1:
+            query = parts[1]
+            user = await find_user_by_query(query)
+            if user:
+                target_user_id = user["user_id"]
+    
+    if not target_user_id:
+        target_user_id = message.from_user.id
+    
+    conn = await get_conn()
+    user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", target_user_id)
+    await conn.close()
+    
+    if not user:
+        await message.answer("<blockquote>❌ Пользователь не найден</blockquote>", parse_mode="HTML")
+        return
+    
+    text = format_profile_group(user)
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛟 Профиль", url=f"https://t.me/{bot.username}?start=user_{target_user_id}")]
+    ])
+    
+    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
 
 @dp.callback_query(lambda call: call.data == "admin_post")
 async def admin_post(call: types.CallbackQuery, state: FSMContext):
@@ -595,6 +638,39 @@ async def admin_send_post(message: types.Message, state: FSMContext):
     
     await message.answer(f"<b>✅ Рассылка завершена!</b>\n\n📨 Доставлено: {success}\n❌ Ошибок: {fail}", parse_mode="HTML")
     await message.answer("<b>🤖 Админ панель открыта!</b>", parse_mode="HTML", reply_markup=get_admin_keyboard())
+
+async def deal_start(message: types.Message, state: FSMContext, deal_id: str):
+    deal = await get_deal(deal_id)
+    
+    if not deal or deal["status"] != "pending_join":
+        await message.answer("<blockquote>❌ Сделка не найдена или уже завершена\n\n• Проверьте ссылку\n• Сделка могла быть уже принята</blockquote>", parse_mode="HTML")
+        return
+    
+    user_id = message.from_user.id
+    
+    if user_id == deal["creator_id"]:
+        await message.answer("<blockquote>❌ Вы не можете присоединиться к своей сделке\n\n• Отправьте ссылку партнёру</blockquote>", parse_mode="HTML")
+        return
+    
+    await state.update_data(deal_id=deal_id, amount=deal["amount"], amount_with_fee=deal["amount_with_fee"], conditions=deal["conditions"], creator_role=deal["creator_role"])
+    
+    your_role = "Продавец" if deal["creator_role"] == "buyer" else "Покупатель"
+    
+    text = (
+        f"<blockquote>📩 ПРИГЛАШЕНИЕ В СДЕЛКУ #{deal_id}\n\n"
+        f"• Ваша роль: {your_role}\n"
+        f"• Сумма: {float(deal['amount']):.2f} USDT\n\n"
+        f"📝 УСЛОВИЯ:\n{deal['conditions']}\n\n"
+        f"Подтвердите участие, чтобы продолжить.</blockquote>"
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Принять сделку", callback_data="accept_deal", style="success")],
+        [InlineKeyboardButton(text="❌ Отклонить", callback_data="reject_deal", style="danger")]
+    ])
+    
+    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+    await state.set_state(DealStates.waiting_accept)
 
 @dp.callback_query(lambda call: call.data == "profile")
 async def profile(call: types.CallbackQuery):
