@@ -656,10 +656,15 @@ async def group_profile(message: types.Message):
 # ---------- ОБРАБОТЧИК ОТЗЫВОВ (+реп, -реп) ----------
 @dp.message()
 async def handle_review_command(message: types.Message):
+    print(f"DEBUG: получил сообщение: {message.text}")
+    print(f"DEBUG: есть фото: {message.photo is not None}")
     if not message.text:
         return
-    if message.from_user.is_bot:
+    text_lower = message.text.lower()
+    print(f"DEBUG: проверяю команду: {text_lower}")
+    if not any(x in text_lower for x in ['+реп', '-реп', '+rep', '-rep']):
         return
+    print("DEBUG: команда распознана")
     
     # Авторегистрация пользователя
     user_id = message.from_user.id
