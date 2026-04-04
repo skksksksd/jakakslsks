@@ -353,7 +353,7 @@ def format_profile(user):
     registered_date_ru = registered_date.replace("January", "января").replace("February", "февраля").replace("March", "марта").replace("April", "апреля").replace("May", "мая").replace("June", "июня").replace("July", "июля").replace("August", "августа").replace("September", "сентября").replace("October", "октября").replace("November", "ноября").replace("December", "декабря")
     text = (
         f"👤 @{username} [ ID: {virtual_id} ]\n\n"
-        f"<blockquote>• <b><a href='callback://rep_{user_id}'>Репутация</a></b> {total_reputation}\n"
+        f"<blockquote>• <b>Репутация</b> {total_reputation}\n"
         f"➕ • {positive_percent:.1f}%\n"
         f"➖ • {negative_percent:.1f}%</blockquote>\n"
         f"<blockquote><b>Депозит:</b> 🛟 ${float(user['deposit']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
@@ -367,112 +367,91 @@ def format_profile(user):
 def get_profile_keyboard(is_own_profile=True, target_user_id=None):
     if is_own_profile:
         return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Кошелек", callback_data="wallet", style="primary")],
-            [InlineKeyboardButton(text="Назад", callback_data="back_to_menu", style="primary")]
+            [InlineKeyboardButton(text="💳 Кошелек", callback_data="wallet")],
+            [InlineKeyboardButton(text="Назад", callback_data="back_to_menu")]
         ])
     else:
         return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⚡️ Репутация", callback_data=f"rep_action_{target_user_id}", style="danger")],
-            [InlineKeyboardButton(text="Назад", callback_data="back_to_menu", style="primary")]
+            [InlineKeyboardButton(text="⚡️ Репутация", callback_data=f"rep_action_{target_user_id}")],
+            [InlineKeyboardButton(text="Назад", callback_data="back_to_menu")]
         ])
 
 def get_main_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔑 Профиль", callback_data="profile", style="primary"), InlineKeyboardButton(text="🔍 Поиск", callback_data="search", style="primary")],
-        [InlineKeyboardButton(text="🔐 АвтоГарант", callback_data="autogarant", style="success")]
+        [InlineKeyboardButton(text="🔑 Профиль", callback_data="profile"), InlineKeyboardButton(text="🔍 Поиск", callback_data="search")],
+        [InlineKeyboardButton(text="🔐 АвтоГарант", callback_data="autogarant")]
     ])
 
 def get_autogarant_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚡️ Создать сделку", callback_data="create_deal", style="success")],
-        [InlineKeyboardButton(text="💳 Кошелек", callback_data="wallet_autogarant", style="primary"), InlineKeyboardButton(text="🔍 Мои сделки", callback_data="my_deals", style="primary")],
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_menu", style="primary")]
+        [InlineKeyboardButton(text="⚡️ Создать сделку", callback_data="create_deal")],
+        [InlineKeyboardButton(text="💳 Кошелек", callback_data="wallet_autogarant"), InlineKeyboardButton(text="🔍 Мои сделки", callback_data="my_deals")],
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_menu")]
     ])
 
 def get_role_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 Покупатель", callback_data="role_buyer", style="success"), InlineKeyboardButton(text="💼 Продавец", callback_data="role_seller", style="danger")],
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant", style="primary")]
+        [InlineKeyboardButton(text="🛒 Покупатель", callback_data="role_buyer"), InlineKeyboardButton(text="💼 Продавец", callback_data="role_seller")],
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant")]
     ])
 
 def get_admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Постинг", callback_data="admin_post", style="primary")],
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats", style="primary")],
-        [InlineKeyboardButton(text="🚪 Выйти", callback_data="admin_exit", style="danger")]
+        [InlineKeyboardButton(text="📢 Постинг", callback_data="admin_post")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="🚪 Выйти", callback_data="admin_exit")]
     ])
 
+# ========== ИСПРАВЛЕННЫЙ ПАРСЕР ==========
 def parse_review_command(text: str):
-    text_lower = text.lower().strip()
-    if re.search(r'\d\+реп', text_lower):
-        return None
-    if re.search(r'\d\+rep', text_lower):
+    text = text.strip()
+    
+    # Ищем команду
+    cmd_match = re.search(r'([+-]реп|[+-]rep)', text.lower())
+    if not cmd_match:
         return None
     
-    patterns = [
-        r'(\+реп|\-реп)\s+@?(\w+)(?:\s+(.+))?',
-        r'@?(\w+)\s+(\+реп|\-реп)(?:\s+(.+))?',
-        r'(\+реп|\-реп)\s+(\d+)(?:\s+(.+))?',
-        r'(\d+)\s+(\+реп|\-реп)(?:\s+(.+))?',
-        r'(\+rep|\-rep)\s+@?(\w+)(?:\s+(.+))?',
-        r'@?(\w+)\s+(\+rep|\-rep)(?:\s+(.+))?',
-        r'(\+rep|\-rep)\s+(\d+)(?:\s+(.+))?',
-        r'(\d+)\s+(\+rep|\-rep)(?:\s+(.+))?',
-        r'@(\w+)\+реп(?:\s+(.+))?',
-        r'@(\w+)\-реп(?:\s+(.+))?',
-        r'@(\w+)\+rep(?:\s+(.+))?',
-        r'@(\w+)\-rep(?:\s+(.+))?',
-        r'(\+реп)(\d+)(?:\s+(.+))?',
-        r'(\-реп)(\d+)(?:\s+(.+))?',
-        r'(\+rep)(\d+)(?:\s+(.+))?',
-        r'(\-rep)(\d+)(?:\s+(.+))?',
-    ]
+    review_type = 'positive' if cmd_match.group(1) in ['+реп', '+rep'] else 'negative'
     
-    for pattern in patterns:
-        match = re.search(pattern, text_lower, re.IGNORECASE)
-        if match:
-            groups = match.groups()
-            if len(groups) == 3:
-                if groups[0] in ['+реп', '+rep', '-реп', '-rep']:
-                    review_type = 'positive' if groups[0] in ['+реп', '+rep'] else 'negative'
-                    target = groups[1]
-                    review_text = groups[2] if groups[2] else ''
-                elif groups[1] in ['+реп', '+rep', '-реп', '-rep']:
-                    review_type = 'positive' if groups[1] in ['+реп', '+rep'] else 'negative'
-                    target = groups[0]
-                    review_text = groups[2] if groups[2] else ''
-                else:
-                    continue
-                target = target.replace('@', '')
-                return {'type': review_type, 'target': target, 'text': review_text.strip() if review_text else ''}
-            elif len(groups) == 2:
-                target = groups[0]
-                review_text = groups[1] if groups[1] else ''
-                review_type = 'positive' if ('+реп' in text_lower or '+rep' in text_lower) else 'negative'
-                return {'type': review_type, 'target': target, 'text': review_text.strip() if review_text else ''}
-    return None
+    # Ищем username
+    user_match = re.search(r'@(\w+)', text)
+    if not user_match:
+        return None
+    
+    target = user_match.group(1)
+    
+    # Всё остальное - текст отзыва
+    review_text = text
+    review_text = re.sub(r'[+-]реп|[+-]rep', '', review_text, flags=re.IGNORECASE)
+    review_text = re.sub(r'@\w+', '', review_text)
+    review_text = review_text.strip()
+    
+    return {'type': review_type, 'target': target, 'text': review_text}
 
-# ========== ЕДИНЫЙ ОБРАБОТЧИК ГРУППЫ ==========
+# ========== ЕДИНЫЙ ОБРАБОТЧИК ГРУППЫ (ИСПРАВЛЕН) ==========
 @dp.message()
 async def group_handler(message: types.Message):
     if message.chat.type == "private":
         return
-    if not message.text:
+    
+    # ИСПРАВЛЕНО: читаем caption у фото
+    message_text = message.caption if message.caption else message.text
+    if not message_text:
         return
     if message.from_user.is_bot:
         return
     
-    print(f"DEBUG [group_handler]: сообщение от {message.from_user.id}: {message.text[:50]}")
+    print(f"DEBUG [group_handler]: сообщение от {message.from_user.id}: {message_text[:50]}")
     
     # Авторегистрация пользователя
     user_id = message.from_user.id
     username = message.from_user.username or str(user_id)
     await get_or_create_user(user_id, username)
     
-    text_lower = message.text.lower()
+    text_lower = message_text.lower()
     
     # 1. Обработка профиля (/и)
-    if message.text.startswith("/и"):
+    if message_text.startswith("/и"):
         print("DEBUG [group_handler]: обрабатываю /и")
         await handle_group_profile(message)
         return
@@ -483,6 +462,7 @@ async def group_handler(message: types.Message):
         await handle_group_review(message)
         return
 
+# ========== ИСПРАВЛЕННАЯ ОБРАБОТКА ПРОФИЛЯ ==========
 async def handle_group_profile(message: types.Message):
     print("DEBUG [handle_group_profile]: начал")
     bot_username = (await bot.get_me()).username
@@ -492,13 +472,16 @@ async def handle_group_profile(message: types.Message):
         target_user_id = message.reply_to_message.from_user.id
         print(f"DEBUG: target из reply: {target_user_id}")
     else:
-        parts = message.text.split()
-        if len(parts) > 1:
-            query = parts[1]
-            user = await find_user_by_query(query)
-            if user:
-                target_user_id = user["user_id"]
-                print(f"DEBUG: target из запроса: {target_user_id}")
+        # ИСПРАВЛЕНО: читаем caption у фото
+        message_text = message.caption if message.caption else message.text
+        if message_text:
+            parts = message_text.split()
+            if len(parts) > 1:
+                query = parts[1]
+                user = await find_user_by_query(query)
+                if user:
+                    target_user_id = user["user_id"]
+                    print(f"DEBUG: target из запроса: {target_user_id}")
     
     if not target_user_id:
         target_user_id = message.from_user.id
@@ -513,25 +496,7 @@ async def handle_group_profile(message: types.Message):
         await message.answer("<blockquote>❌ Пользователь не найден</blockquote>", parse_mode="HTML")
         return
     
-    virtual_id = user["virtual_id"] if user["virtual_id"] else user["user_id"]
-    username_display = user["username"] or str(user["user_id"])
-    total_reputation = user["reputation_positive"] + user["reputation_negative"]
-    positive_percent = (user["reputation_positive"] / total_reputation * 100) if total_reputation > 0 else 0
-    negative_percent = (user["reputation_negative"] / total_reputation * 100) if total_reputation > 0 else 0
-    registered_date = user["registered_at"].strftime("%d %B %Y года")
-    registered_date_ru = registered_date.replace("January", "января").replace("February", "февраля").replace("March", "марта").replace("April", "апреля").replace("May", "мая").replace("June", "июня").replace("July", "июля").replace("August", "августа").replace("September", "сентября").replace("October", "октября").replace("November", "ноября").replace("December", "декабря")
-    
-    text = (
-        f"👤 @{username_display} [ ID: {virtual_id} ]\n\n"
-        f"<blockquote>• <b>Репутация</b> {total_reputation}\n"
-        f"➕ • {positive_percent:.1f}%\n"
-        f"➖ • {negative_percent:.1f}%</blockquote>\n"
-        f"<blockquote><b>Депозит:</b> 🛟 ${float(user['deposit']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
-        f"<blockquote><b>Сделки:</b> 💰 {user['deals_count']} шт · ${float(user['deals_sum']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
-        f"<blockquote>❗️ <b>ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</b></blockquote>\n\n"
-        f"📅 В системе с {registered_date_ru}\n"
-        f"<blockquote><b>✅ АвтоГарант — @SHIFTrepbot</b></blockquote>"
-    )
+    text = format_profile(user)
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛟 Профиль", url=f"https://t.me/{bot_username}?start=user_{target_user_id}")]
@@ -540,10 +505,17 @@ async def handle_group_profile(message: types.Message):
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     print("DEBUG [handle_group_profile]: профиль отправлен")
 
+# ========== ИСПРАВЛЕННАЯ ОБРАБОТКА ОТЗЫВА ==========
 async def handle_group_review(message: types.Message):
-    print(f"DEBUG [handle_group_review]: начал, текст: {message.text}")
+    # ИСПРАВЛЕНО: читаем caption у фото
+    message_text = message.caption if message.caption else message.text
+    if not message_text:
+        print("DEBUG: нет текста")
+        return
     
-    parsed = parse_review_command(message.text)
+    print(f"DEBUG [handle_group_review]: начал, текст: {message_text}")
+    
+    parsed = parse_review_command(message_text)
     if not parsed:
         print("DEBUG: парсер не распознал команду")
         return
@@ -567,6 +539,7 @@ async def handle_group_review(message: types.Message):
         target_user = await find_user_by_query(f"@{target}")
         if not target_user:
             print("DEBUG: пользователь не найден по username")
+            await message.reply("<blockquote>❌ Пользователь не найден</blockquote>", parse_mode="HTML")
             return
         target_user_id = target_user["user_id"]
         target_username = target_user["username"]
@@ -575,15 +548,21 @@ async def handle_group_review(message: types.Message):
     # Нельзя себе
     if from_user_id == target_user_id:
         print("DEBUG: нельзя себе")
+        await message.reply("<blockquote>❌ Нельзя оставить отзыв самому себе</blockquote>", parse_mode="HTML")
         return
     
-    # Фото обязательно
-    if not message.photo:
+    # ИСПРАВЛЕНО: проверяем фото в текущем сообщении или в reply
+    photo_id = None
+    if message.photo:
+        photo_id = message.photo[-1].file_id
+        print(f"DEBUG: фото есть, id={photo_id}")
+    elif message.reply_to_message and message.reply_to_message.photo:
+        photo_id = message.reply_to_message.photo[-1].file_id
+        print(f"DEBUG: фото взято из reply, id={photo_id}")
+    else:
         print("DEBUG: нет фото")
+        await message.reply("<blockquote>❌ Для отзыва нужно прикрепить фото подтверждения</blockquote>", parse_mode="HTML")
         return
-    
-    photo_id = message.photo[-1].file_id
-    print(f"DEBUG: фото есть, id={photo_id}")
     
     # Сохраняем
     conn = await get_conn()
@@ -608,7 +587,7 @@ async def handle_group_review(message: types.Message):
     
     await bot.send_message(
         target_user_id,
-        f"<blockquote>{review_emoji} Вы получили {review_text_display} отзыв от @{from_username}\n\n📝 {review_text}</blockquote>",
+        f"<blockquote>{review_emoji} Вы получили {review_text_display} отзыв от @{from_username}\n\n📝 {review_text if review_text else 'Без комментария'}</blockquote>",
         parse_mode="HTML"
     )
     print("DEBUG: уведомление отправлено")
@@ -617,7 +596,7 @@ async def handle_group_review(message: types.Message):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="ℹ️", url=f"https://t.me/{bot_username}?start=rep_user_{target_user_id}")]
     ])
-    await message.answer("<blockquote>✅ Отзыв сохранен</blockquote>", parse_mode="HTML", reply_markup=keyboard)
+    await message.reply("<blockquote>✅ Отзыв сохранен</blockquote>", parse_mode="HTML", reply_markup=keyboard)
     print("DEBUG: ответ в группе отправлен")
 
 # ========== ОСНОВНЫЕ КОМАНДЫ ==========
@@ -660,9 +639,9 @@ async def start(message: types.Message, state: FSMContext):
         await state.update_data(target_user_id=target_user_id, target_username=username)
         text = f"<blockquote>Какую репутацию @{username} вы хотите посмотреть?</blockquote>"
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Все", callback_data=f"rep_type_all_{target_user_id}", style="primary")],
-            [InlineKeyboardButton(text="Положительные", callback_data=f"rep_type_positive_{target_user_id}", style="success"), InlineKeyboardButton(text="Отрицательные", callback_data=f"rep_type_negative_{target_user_id}", style="danger")],
-            [InlineKeyboardButton(text="Назад", callback_data="back_to_menu", style="primary")]
+            [InlineKeyboardButton(text="Все", callback_data=f"rep_type_all_{target_user_id}")],
+            [InlineKeyboardButton(text="Положительные", callback_data=f"rep_type_positive_{target_user_id}"), InlineKeyboardButton(text="Отрицательные", callback_data=f"rep_type_negative_{target_user_id}")],
+            [InlineKeyboardButton(text="Назад", callback_data="back_to_menu")]
         ])
         await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
         return
@@ -707,7 +686,7 @@ async def search(call: types.CallbackQuery, state: FSMContext):
         "• Найденный профиль откроется в нашем формате</blockquote>"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_menu", style="primary")]
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_menu")]
     ])
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await state.set_state(SearchStates.waiting_search)
@@ -739,8 +718,8 @@ async def wallet(call: types.CallbackQuery):
         f"Выберите действие:</blockquote>"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Пополнить", callback_data="deposit", style="success"), InlineKeyboardButton(text="➖ Вывести", callback_data="withdraw", style="danger")],
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_profile", style="primary")]
+        [InlineKeyboardButton(text="➕ Пополнить", callback_data="deposit"), InlineKeyboardButton(text="➖ Вывести", callback_data="withdraw")],
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_profile")]
     ])
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await call.answer()
@@ -760,8 +739,8 @@ async def wallet_autogarant(call: types.CallbackQuery):
         f"Выберите действие:</blockquote>"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Пополнить", callback_data="deposit", style="success"), InlineKeyboardButton(text="➖ Вывести", callback_data="withdraw", style="danger")],
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant", style="primary")]
+        [InlineKeyboardButton(text="➕ Пополнить", callback_data="deposit"), InlineKeyboardButton(text="➖ Вывести", callback_data="withdraw")],
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant")]
     ])
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await call.answer()
@@ -776,7 +755,7 @@ async def deposit_start(call: types.CallbackQuery, state: FSMContext):
         "Пример: 5 или 50</blockquote>"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад", callback_data="wallet", style="primary")]
+        [InlineKeyboardButton(text="Назад", callback_data="wallet")]
     ])
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await state.set_state(WalletStates.waiting_deposit_amount)
@@ -808,7 +787,7 @@ async def deposit_amount(message: types.Message, state: FSMContext):
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оплатить", url=invoice_url)],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="wallet", style="danger")]
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="wallet")]
     ])
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     await state.clear()
@@ -831,7 +810,7 @@ async def withdraw_start(call: types.CallbackQuery, state: FSMContext):
         f"Введите сумму для вывода:</blockquote>"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад", callback_data="wallet", style="primary")]
+        [InlineKeyboardButton(text="Назад", callback_data="wallet")]
     ])
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await state.set_state(WalletStates.waiting_withdraw_amount)
@@ -871,7 +850,7 @@ async def withdraw_amount(message: types.Message, state: FSMContext):
         f"🔗 <a href='{check_url}'>Активировать чек</a></blockquote>"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад", callback_data="wallet", style="primary")]
+        [InlineKeyboardButton(text="Назад", callback_data="wallet")]
     ])
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     await state.clear()
@@ -934,7 +913,7 @@ async def show_deals_page(call, state, page):
     if (page + 1) * limit < total:
         nav_buttons.append(InlineKeyboardButton(text="Вперед", callback_data=f"deals_page_{page+1}"))
     keyboard.append(nav_buttons)
-    keyboard.append([InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant", style="primary")])
+    keyboard.append([InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant")])
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await call.answer()
 
@@ -975,7 +954,7 @@ async def my_deal_detail(call: types.CallbackQuery, state: FSMContext):
         f"• Статус: {status_display}</blockquote>"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад", callback_data="my_deals", style="primary")]
+        [InlineKeyboardButton(text="Назад", callback_data="my_deals")]
     ])
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await call.answer()
@@ -1006,7 +985,7 @@ async def select_role(call: types.CallbackQuery, state: FSMContext):
         "Пример: 50 или 12.5</blockquote>"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant", style="primary")]
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant")]
     ])
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await state.set_state(DealStates.waiting_amount)
@@ -1033,7 +1012,7 @@ async def deal_amount(message: types.Message, state: FSMContext):
         "• Что считается нарушением</blockquote>"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_role", style="primary")]
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_role")]
     ])
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     await state.set_state(DealStates.waiting_conditions)
@@ -1067,8 +1046,8 @@ async def deal_conditions(message: types.Message, state: FSMContext):
         f"После подтверждения изменить данные нельзя.</blockquote>"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Подтвердить", callback_data="confirm_deal", style="success")],
-        [InlineKeyboardButton(text="❌ Отменить", callback_data="back_to_autogarant", style="danger")]
+        [InlineKeyboardButton(text="✅ Подтвердить", callback_data="confirm_deal")],
+        [InlineKeyboardButton(text="❌ Отменить", callback_data="back_to_autogarant")]
     ])
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     await state.update_data(conditions=conditions)
@@ -1095,8 +1074,8 @@ async def confirm_deal(call: types.CallbackQuery, state: FSMContext):
         f"После перехода партнёр подтвердит участие.</blockquote>"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Мои сделки", callback_data="my_deals", style="primary")],
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant", style="primary")]
+        [InlineKeyboardButton(text="Мои сделки", callback_data="my_deals")],
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant")]
     ])
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await state.clear()
@@ -1121,8 +1100,8 @@ async def deal_start(message: types.Message, state: FSMContext, deal_id: str):
         f"Подтвердите участие, чтобы продолжить.</blockquote>"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Принять сделку", callback_data="accept_deal", style="success")],
-        [InlineKeyboardButton(text="❌ Отклонить", callback_data="reject_deal", style="danger")]
+        [InlineKeyboardButton(text="✅ Принять сделку", callback_data="accept_deal")],
+        [InlineKeyboardButton(text="❌ Отклонить", callback_data="reject_deal")]
     ])
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     await state.set_state(DealStates.waiting_accept)
@@ -1163,9 +1142,9 @@ async def accept_deal(call: types.CallbackQuery, state: FSMContext):
         f"После оплаты средства заморозятся до выполнения условий.</blockquote>"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Оплатить балансом", callback_data=f"pay_balance_{deal_id}", style="success")],
+        [InlineKeyboardButton(text="💳 Оплатить балансом", callback_data=f"pay_balance_{deal_id}")],
         [InlineKeyboardButton(text="💳 Оплата CryptoBot", url=invoice_url)],
-        [InlineKeyboardButton(text="❌ Отменить сделку", callback_data="cancel_deal", style="danger")]
+        [InlineKeyboardButton(text="❌ Отменить сделку", callback_data="cancel_deal")]
     ])
     await bot.send_message(buyer_id, text, parse_mode="HTML", reply_markup=keyboard)
     await call.answer("Вы приняли сделку", show_alert=True)
@@ -1210,8 +1189,8 @@ async def pay_balance(call: types.CallbackQuery):
     await freeze_balance(buyer_id, amount)
     await update_deal_status(deal_id, "paid")
     seller_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Подтвердить выполнение", callback_data=f"confirm_complete_{deal_id}", style="success")],
-        [InlineKeyboardButton(text="⚠️ Открыть спор", callback_data=f"open_dispute_{deal_id}", style="danger")]
+        [InlineKeyboardButton(text="✅ Подтвердить выполнение", callback_data=f"confirm_complete_{deal_id}")],
+        [InlineKeyboardButton(text="⚠️ Открыть спор", callback_data=f"open_dispute_{deal_id}")]
     ])
     await bot.send_message(
         deal["seller_id"],
@@ -1261,8 +1240,8 @@ async def confirm_complete(call: types.CallbackQuery):
         f"• После подтверждения покупатель получит доступ к разблокировке</blockquote>"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Да, всё выполнено", callback_data=f"confirm_done_{deal_id}", style="success")],
-        [InlineKeyboardButton(text="❌ Нет, ещё работаю", callback_data="my_deals", style="danger")]
+        [InlineKeyboardButton(text="✅ Да, всё выполнено", callback_data=f"confirm_done_{deal_id}")],
+        [InlineKeyboardButton(text="❌ Нет, ещё работаю", callback_data="my_deals")]
     ])
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await call.answer()
@@ -1275,8 +1254,8 @@ async def confirm_done(call: types.CallbackQuery):
         await call.answer("Сделка не найдена или уже завершена", show_alert=True)
         return
     buyer_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Подтвердить получение", callback_data=f"confirm_receive_{deal_id}", style="success")],
-        [InlineKeyboardButton(text="❌ Открыть спор", callback_data=f"open_dispute_{deal_id}", style="danger")]
+        [InlineKeyboardButton(text="✅ Подтвердить получение", callback_data=f"confirm_receive_{deal_id}")],
+        [InlineKeyboardButton(text="❌ Открыть спор", callback_data=f"open_dispute_{deal_id}")]
     ])
     await bot.send_message(
         deal["buyer_id"],
@@ -1306,7 +1285,7 @@ async def confirm_receive(call: types.CallbackQuery):
         parse_mode="HTML"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Мои сделки", callback_data="my_deals", style="primary")]
+        [InlineKeyboardButton(text="Мои сделки", callback_data="my_deals")]
     ])
     await call.message.edit_text(
         f"<blockquote>🏁 СДЕЛКА #{deal_id} ЗАВЕРШЕНА\n\n"
@@ -1401,9 +1380,9 @@ async def rep_action(call: types.CallbackQuery, state: FSMContext):
     await state.update_data(target_user_id=target_user_id, target_username=username)
     text = f"<blockquote>Какую репутацию @{username} вы хотите посмотреть?</blockquote>"
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Все", callback_data=f"rep_type_all_{target_user_id}", style="primary")],
-        [InlineKeyboardButton(text="Положительные", callback_data=f"rep_type_positive_{target_user_id}", style="success"), InlineKeyboardButton(text="Отрицательные", callback_data=f"rep_type_negative_{target_user_id}", style="danger")],
-        [InlineKeyboardButton(text="Назад", callback_data=f"back_to_user_profile_{target_user_id}", style="primary")]
+        [InlineKeyboardButton(text="Все", callback_data=f"rep_type_all_{target_user_id}")],
+        [InlineKeyboardButton(text="Положительные", callback_data=f"rep_type_positive_{target_user_id}"), InlineKeyboardButton(text="Отрицательные", callback_data=f"rep_type_negative_{target_user_id}")],
+        [InlineKeyboardButton(text="Назад", callback_data=f"back_to_user_profile_{target_user_id}")]
     ])
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await call.answer()
@@ -1457,7 +1436,7 @@ async def show_reviews_page(call, state, target_user_id, review_type, page, user
     if (page + 1) * limit < total:
         nav_buttons.append(InlineKeyboardButton(text="Вперед", callback_data=f"rep_page_{page+1}"))
     keyboard_buttons.append(nav_buttons)
-    keyboard_buttons.append([InlineKeyboardButton(text="Вернуться", callback_data=f"rep_action_{target_user_id}", style="primary")])
+    keyboard_buttons.append([InlineKeyboardButton(text="Вернуться", callback_data=f"rep_action_{target_user_id}")])
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await call.answer()
@@ -1565,7 +1544,7 @@ async def admin_stats(call: types.CallbackQuery):
         f"⚠️ Споров: {disputed_deals}"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back", style="primary")]
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]
     ])
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await call.answer()
