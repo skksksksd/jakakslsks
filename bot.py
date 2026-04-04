@@ -8,7 +8,7 @@ import re
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, FSInputFile
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
@@ -391,7 +391,7 @@ def format_profile(user):
     )
     return text
 
-def format_profile_group(user):
+def format_profile_group(user, bot_username):
     user_id = user["user_id"]
     username = user["username"] or str(user_id)
     virtual_id = user["virtual_id"] if user["virtual_id"] else user_id
@@ -413,7 +413,7 @@ def format_profile_group(user):
         f"<blockquote>❗️ <b>ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</b></blockquote>\n\n"
         f"📅 В системе с {registered_date_ru}\n"
         f"<blockquote><b>✅ АвтоГарант — @SHIFTrepbot</b></blockquote>\n\n"
-        f"🔗 <a href='https://t.me/{bot.username}?start=user_{user_id}'>🛟 Профиль</a>"
+        f"🔗 <a href='https://t.me/{bot_username}?start=user_{user_id}'>🛟 Профиль</a>"
     )
     return text
 
@@ -514,6 +514,8 @@ async def group_profile(message: types.Message):
     if not message.text.startswith("/и"):
         return
     
+    bot_username = (await bot.get_me()).username
+    
     target_user_id = None
     
     if message.reply_to_message:
@@ -537,10 +539,10 @@ async def group_profile(message: types.Message):
         await message.answer("<blockquote>❌ Пользователь не найден</blockquote>", parse_mode="HTML")
         return
     
-    text = format_profile_group(user)
+    text = format_profile_group(user, bot_username)
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛟 Профиль", url=f"https://t.me/{bot.username}?start=user_{target_user_id}")]
+        [InlineKeyboardButton(text="🛟 Профиль", url=f"https://t.me/{bot_username}?start=user_{target_user_id}")]
     ])
     
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
