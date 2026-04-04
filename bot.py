@@ -22,6 +22,18 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
+# ========== ЧЁРНЫЙ СПИСОК ЗАПРЕЩЁННЫХ СЛОВ (настоящее и будущее время) ==========
+BLACKLIST_WORDS = [
+    # Будущее время
+    'куплю', 'выдам', 'солью', 'сделаю', 'подпишу', 'продам', 'встану', 'дам',
+    # Настоящее время
+    'покупаю', 'выдаю', 'сливаю', 'делаю', 'подписываю', 'продаю', 'встаю', 'даю',
+    # Дополнительно
+    'предложу', 'предлагаю', 'найду', 'нахожу', 'залью', 'заливаю', 'настрою', 'настраиваю',
+    'напишу', 'пишу', 'создам', 'создаю', 'заменю', 'заменяю', 'отдам', 'отдаю',
+    'передам', 'передаю', 'организую', 'помогу', 'помогаю', 'предоставлю', 'предоставляю'
+]
+
 class SearchStates(StatesGroup):
     waiting_search = State()
 
@@ -402,7 +414,7 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text="🚪 Выйти", callback_data="admin_exit", style="danger")]
     ])
 
-# ========== НОВЫЙ УМНЫЙ ПАРСЕР (поддерживает любые форматы, включая слитные) ==========
+# ========== УМНЫЙ ПАРСЕР (понимает любые форматы) ==========
 def parse_review_command(text: str):
     text_lower = text.lower().strip()
     
@@ -410,11 +422,23 @@ def parse_review_command(text: str):
     if re.search(r'\d\+реп', text_lower) or re.search(r'\d\+rep', text_lower):
         return None
     
+    # СПЕРВА ищем явное @username (самый надёжный вариант)
+    at_pattern = r'@(\w+)'
+    at_match = re.search(at_pattern, text_lower)
+    
+    if at_match:
+        target = at_match.group(1)
+        if re.search(r'\+реп|\+rep', text_lower):
+            review_type = 'positive'
+            review_text = re.sub(r'\+реп|\+rep|@\w+', '', text_lower).strip()
+            return {'type': review_type, 'target': target, 'text': review_text}
+        elif re.search(r'\-реп|\-rep', text_lower):
+            review_type = 'negative'
+            review_text = re.sub(r'\-реп|\-rep|@\w+', '', text_lower).strip()
+            return {'type': review_type, 'target': target, 'text': review_text}
+    
+    # Если @username не найден, пробуем старые паттерны
     patterns = [
-        # Слитное: @username+реп или @username-реп
-        r'@(\w+)(\+реп|\-реп)(?:\s+(.+))?',
-        r'@(\w+)(\+rep|\-rep)(?:\s+(.+))?',
-        # Обычные форматы
         r'(\+реп|\-реп)\s+@?(\w+)(?:\s+(.+))?',
         r'@?(\w+)\s+(\+реп|\-реп)(?:\s+(.+))?',
         r'(\+реп|\-реп)\s+(\d+)(?:\s+(.+))?',
@@ -423,7 +447,6 @@ def parse_review_command(text: str):
         r'@?(\w+)\s+(\+rep|\-rep)(?:\s+(.+))?',
         r'(\+rep|\-rep)\s+(\d+)(?:\s+(.+))?',
         r'(\d+)\s+(\+rep|\-rep)(?:\s+(.+))?',
-        # Без @
         r'(\w+)(\+реп|\-реп)(?:\s+(.+))?',
         r'(\w+)(\+rep|\-rep)(?:\s+(.+))?',
     ]
@@ -432,15 +455,6 @@ def parse_review_command(text: str):
         match = re.search(pattern, text_lower, re.IGNORECASE)
         if match:
             groups = match.groups()
-            
-            # Слитное написание: @username+rep
-            if len(groups) >= 2 and groups[1] in ['+реп', '+rep', '-реп', '-rep']:
-                review_type = 'positive' if groups[1] in ['+реп', '+rep'] else 'negative'
-                target = groups[0]
-                review_text = groups[2] if len(groups) > 2 and groups[2] else ''
-                return {'type': review_type, 'target': target, 'text': review_text.strip()}
-            
-            # Обычные форматы с 3 группами
             if len(groups) == 3:
                 if groups[0] in ['+реп', '+rep', '-реп', '-rep']:
                     review_type = 'positive' if groups[0] in ['+реп', '+rep'] else 'negative'
@@ -454,8 +468,6 @@ def parse_review_command(text: str):
                     continue
                 target = target.replace('@', '')
                 return {'type': review_type, 'target': target, 'text': review_text.strip() if review_text else ''}
-            
-            # Форматы с 2 группами
             elif len(groups) == 2:
                 target = groups[0]
                 review_text = groups[1] if groups[1] else ''
@@ -522,7 +534,7 @@ async def handle_group_profile(message: types.Message):
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     print("DEBUG [handle_group_profile]: профиль отправлен")
 
-# ========== ИСПРАВЛЕННАЯ ФУНКЦИЯ ДЛЯ ОТЗЫВОВ (учитывает пересылки) ==========
+# ========== ОБРАБОТКА ОТЗЫВОВ (с чёрным списком и учётом пересылок) ==========
 async def handle_group_review(message: types.Message):
     print(f"DEBUG [handle_group_review]: начал, текст: {message.text or message.caption}")
     
@@ -537,18 +549,26 @@ async def handle_group_review(message: types.Message):
     review_type = parsed['type']
     review_text = parsed['text']
     
+    # ========== ПРОВЕРКА ЧЁРНОГО СПИСКА ==========
+    review_text_lower = review_text.lower()
+    for bad_word in BLACKLIST_WORDS:
+        if bad_word in review_text_lower:
+            await message.reply(
+                f"<blockquote>❌ Отзыв отклонён\n\nОбнаружено запрещённое слово: <b>{bad_word}</b>\n\n• Отзывы не должны содержать объявления/предложения услуг</blockquote>",
+                parse_mode="HTML"
+            )
+            print(f"DEBUG: отклонено из-за слова '{bad_word}'")
+            return
+    
     # ОПРЕДЕЛЯЕМ РЕАЛЬНОГО АВТОРА (учитываем пересылку)
     if message.forward_from:
-        # Переслано от конкретного пользователя
         from_user_id = message.forward_from.id
         from_username = message.forward_from.username or str(from_user_id)
         print(f"DEBUG: переслано от пользователя: {from_user_id}")
     elif message.forward_sender_name:
-        # Переслано от скрытого пользователя
         await message.reply("<blockquote>❌ Нельзя пересылать отзывы от скрытых пользователей</blockquote>", parse_mode="HTML")
         return
     else:
-        # Обычное сообщение (не пересланное)
         from_user_id = message.from_user.id
         from_username = message.from_user.username or str(from_user_id)
     
@@ -570,7 +590,7 @@ async def handle_group_review(message: types.Message):
         target_username = target_user["username"]
         print(f"DEBUG: получатель по username: {target_user_id}")
     
-    # Проверка: нельзя оставить отзыв самому себе (сравниваем реального автора и получателя)
+    # Проверка: нельзя оставить отзыв самому себе
     if from_user_id == target_user_id:
         print("DEBUG: нельзя себе")
         await message.reply("<blockquote>❌ Нельзя оставить отзыв самому себе</blockquote>", parse_mode="HTML")
@@ -650,21 +670,17 @@ async def handle_all_messages(message: types.Message, state: FSMContext):
     
     # ГРУППОВЫЕ СООБЩЕНИЯ
     if message.chat.type in ["group", "supergroup"]:
-        # Получаем текст из правильного места
         text_content = message.text or message.caption or ""
         
         if not text_content:
             return
         
-        # Обработка команды /и
         if text_content.startswith("/и"):
             await handle_group_profile(message)
             return
         
-        # Обработка отзывов
         text_lower = text_content.lower()
         if any(x in text_lower for x in ['+реп', '-реп', '+rep', '-rep']):
-            # Проверка: есть ли фото
             if not message.photo:
                 await message.reply("<blockquote>❌ Для отзыва необходимо прикрепить скриншот/доказательство сделки</blockquote>", parse_mode="HTML")
                 return
@@ -1513,7 +1529,6 @@ async def show_reviews_page(call, state, target_user_id, review_type, page, user
     keyboard_buttons.append([InlineKeyboardButton(text="Вернуться", callback_data=f"rep_action_{target_user_id}", style="primary")])
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     
-    # Безопасное редактирование сообщения
     try:
         if call.message.text:
             await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
