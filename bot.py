@@ -19,16 +19,17 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost/d
 CRYPTO_TOKEN = os.getenv("CRYPTO_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
+# ========== ПРОВЕРКА ПОДПИСКИ ==========
+GROUP_ID = os.getenv("GROUP_ID")  # ID приватной группы, например: -1001234567890
+GROUP_LINK = os.getenv("GROUP_LINK")  # Ссылка-приглашение
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# ========== ЧЁРНЫЙ СПИСОК ЗАПРЕЩЁННЫХ СЛОВ (настоящее и будущее время) ==========
+# ========== ЧЁРНЫЙ СПИСОК ЗАПРЕЩЁННЫХ СЛОВ ==========
 BLACKLIST_WORDS = [
-    # Будущее время
     'куплю', 'выдам', 'солью', 'сделаю', 'подпишу', 'продам', 'встану', 'дам',
-    # Настоящее время
     'покупаю', 'выдаю', 'сливаю', 'делаю', 'подписываю', 'продаю', 'встаю', 'даю',
-    # Дополнительно
     'предложу', 'предлагаю', 'найду', 'нахожу', 'залью', 'заливаю', 'настрою', 'настраиваю',
     'напишу', 'пишу', 'создам', 'создаю', 'заменю', 'заменяю', 'отдам', 'отдаю',
     'передам', 'передаю', 'организую', 'помогу', 'помогаю', 'предоставлю', 'предоставляю'
@@ -414,15 +415,13 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text="🚪 Выйти", callback_data="admin_exit", style="danger")]
     ])
 
-# ========== УМНЫЙ ПАРСЕР (понимает любые форматы) ==========
+# ========== УМНЫЙ ПАРСЕР ==========
 def parse_review_command(text: str):
     text_lower = text.lower().strip()
     
-    # Защита от ложных срабатываний
     if re.search(r'\d\+реп', text_lower) or re.search(r'\d\+rep', text_lower):
         return None
     
-    # СПЕРВА ищем явное @username (самый надёжный вариант)
     at_pattern = r'@(\w+)'
     at_match = re.search(at_pattern, text_lower)
     
@@ -437,7 +436,6 @@ def parse_review_command(text: str):
             review_text = re.sub(r'\-реп|\-rep|@\w+', '', text_lower).strip()
             return {'type': review_type, 'target': target, 'text': review_text}
     
-    # Если @username не найден, пробуем старые паттерны
     patterns = [
         r'(\+реп|\-реп)\s+@?(\w+)(?:\s+(.+))?',
         r'@?(\w+)\s+(\+реп|\-реп)(?:\s+(.+))?',
@@ -484,7 +482,6 @@ async def handle_group_profile(message: types.Message):
     target_user_id = None
     if message.reply_to_message:
         target_user_id = message.reply_to_message.from_user.id
-        print(f"DEBUG: target из reply: {target_user_id}")
     else:
         parts = message.text.split()
         if len(parts) > 1:
@@ -492,18 +489,15 @@ async def handle_group_profile(message: types.Message):
             user = await find_user_by_query(query)
             if user:
                 target_user_id = user["user_id"]
-                print(f"DEBUG: target из запроса: {target_user_id}")
     
     if not target_user_id:
         target_user_id = message.from_user.id
-        print(f"DEBUG: target свой: {target_user_id}")
     
     conn = await get_conn()
     user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", target_user_id)
     await conn.close()
     
     if not user:
-        print("DEBUG: пользователь не найден в БД")
         await message.answer("<blockquote>❌ Пользователь не найден</blockquote>", parse_mode="HTML")
         return
     
@@ -532,24 +526,19 @@ async def handle_group_profile(message: types.Message):
     ])
     
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
-    print("DEBUG [handle_group_profile]: профиль отправлен")
 
-# ========== ОБРАБОТКА ОТЗЫВОВ (с чёрным списком и учётом пересылок) ==========
 async def handle_group_review(message: types.Message):
-    print(f"DEBUG [handle_group_review]: начал, текст: {message.text or message.caption}")
+    print(f"DEBUG [handle_group_review]: начал")
     
     parsed = parse_review_command(message.text or message.caption or "")
     if not parsed:
-        print("DEBUG: парсер не распознал команду")
         return
-    
-    print(f"DEBUG: парсер вернул: {parsed}")
     
     target = parsed['target']
     review_type = parsed['type']
     review_text = parsed['text']
     
-    # ========== ПРОВЕРКА ЧЁРНОГО СПИСКА ==========
+    # Проверка чёрного списка
     review_text_lower = review_text.lower()
     for bad_word in BLACKLIST_WORDS:
         if bad_word in review_text_lower:
@@ -557,14 +546,12 @@ async def handle_group_review(message: types.Message):
                 f"<blockquote>❌ Отзыв отклонён\n\nОбнаружено запрещённое слово: <b>{bad_word}</b>\n\n• Отзывы не должны содержать объявления/предложения услуг</blockquote>",
                 parse_mode="HTML"
             )
-            print(f"DEBUG: отклонено из-за слова '{bad_word}'")
             return
     
-    # ОПРЕДЕЛЯЕМ РЕАЛЬНОГО АВТОРА (учитываем пересылку)
+    # Определяем реального автора
     if message.forward_from:
         from_user_id = message.forward_from.id
         from_username = message.forward_from.username or str(from_user_id)
-        print(f"DEBUG: переслано от пользователя: {from_user_id}")
     elif message.forward_sender_name:
         await message.reply("<blockquote>❌ Нельзя пересылать отзывы от скрытых пользователей</blockquote>", parse_mode="HTML")
         return
@@ -572,40 +559,32 @@ async def handle_group_review(message: types.Message):
         from_user_id = message.from_user.id
         from_username = message.from_user.username or str(from_user_id)
     
-    print(f"DEBUG: from_user_id={from_user_id}, target={target}, review_type={review_type}")
-    
     # Определяем получателя
     if target.isdigit():
         target_user_id = int(target)
         target_user = await get_or_create_user(target_user_id, str(target_user_id))
         target_username = target_user["username"] if target_user else str(target_user_id)
-        print(f"DEBUG: получатель по ID: {target_user_id}")
     else:
         target_user = await find_user_by_query(f"@{target}")
         if not target_user:
-            print("DEBUG: пользователь не найден по username")
             await message.reply("<blockquote>❌ Пользователь не найден</blockquote>", parse_mode="HTML")
             return
         target_user_id = target_user["user_id"]
         target_username = target_user["username"]
-        print(f"DEBUG: получатель по username: {target_user_id}")
     
-    # Проверка: нельзя оставить отзыв самому себе
+    # Нельзя себе
     if from_user_id == target_user_id:
-        print("DEBUG: нельзя себе")
         await message.reply("<blockquote>❌ Нельзя оставить отзыв самому себе</blockquote>", parse_mode="HTML")
         return
     
     # Фото обязательно
     if not message.photo:
-        print("DEBUG: нет фото")
         await message.reply("<blockquote>❌ Для отзыва необходимо прикрепить скриншот/доказательство сделки</blockquote>", parse_mode="HTML")
         return
     
     photo_id = message.photo[-1].file_id
-    print(f"DEBUG: фото есть, id={photo_id}")
     
-    # Сохраняем отзыв
+    # Сохраняем
     conn = await get_conn()
     await conn.execute(
         "INSERT INTO reviews (from_user_id, to_user_id, review_type, review_text, photo_id) VALUES ($1, $2, $3, $4, $5)",
@@ -621,57 +600,57 @@ async def handle_group_review(message: types.Message):
         review_emoji = "👎"
         review_text_display = "Отрицательный"
     await conn.close()
-    print("DEBUG: отзыв сохранён")
     
-    # Уведомляем получателя
+    # Уведомляем
     await bot.send_message(
         target_user_id,
         f"<blockquote>{review_emoji} Вы получили {review_text_display} отзыв от @{from_username}\n\n📝 {review_text}</blockquote>",
         parse_mode="HTML"
     )
-    print("DEBUG: уведомление отправлено")
     
     bot_username = (await bot.get_me()).username
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="ℹ️", url=f"https://t.me/{bot_username}?start=rep_user_{target_user_id}")]
     ])
     await message.answer("<blockquote>✅ Отзыв сохранен</blockquote>", parse_mode="HTML", reply_markup=keyboard)
-    print("DEBUG: ответ в группе отправлен")
+
+# ========== ПРОВЕРКА ПОДПИСКИ ==========
+async def check_subscription(user_id: int) -> bool:
+    if not GROUP_ID:
+        return True
+    try:
+        member = await bot.get_chat_member(chat_id=int(GROUP_ID), user_id=user_id)
+        return member.status in ["member", "administrator", "creator"]
+    except Exception:
+        return False
 
 # ========== ЕДИНЫЙ УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК ==========
 @dp.message()
 async def handle_all_messages(message: types.Message, state: FSMContext):
-    # Игнорируем ботов
     if message.from_user.is_bot:
         return
     
-    # Авторегистрация для всех пользователей
     user_id = message.from_user.id
     username = message.from_user.username or str(user_id)
     await get_or_create_user(user_id, username)
     
-    # ЛИЧНЫЕ СООБЩЕНИЯ
     if message.chat.type == "private":
         if not message.text:
             return
         
-        # Проверяем, не находимся ли мы в состоянии поиска
         current_state = await state.get_state()
         if current_state == SearchStates.waiting_search:
             await process_search(message, state)
             return
         
-        # Обработка команд
         if message.text.startswith("/start"):
             await start(message, state)
         elif message.text.startswith("/admin"):
             await admin_panel(message)
         return
     
-    # ГРУППОВЫЕ СООБЩЕНИЯ
     if message.chat.type in ["group", "supergroup"]:
         text_content = message.text or message.caption or ""
-        
         if not text_content:
             return
         
@@ -679,37 +658,42 @@ async def handle_all_messages(message: types.Message, state: FSMContext):
             await handle_group_profile(message)
             return
         
-        text_lower = text_content.lower()
-        if any(x in text_lower for x in ['+реп', '-реп', '+rep', '-rep']):
+        if any(x in text_content.lower() for x in ['+реп', '-реп', '+rep', '-rep']):
             if not message.photo:
                 await message.reply("<blockquote>❌ Для отзыва необходимо прикрепить скриншот/доказательство сделки</blockquote>", parse_mode="HTML")
                 return
-            
             await handle_group_review(message)
             return
 
 # ========== ОСНОВНЫЕ КОМАНДЫ ==========
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext):
-    print(f"DEBUG [start]: вызван, тип чата: {message.chat.type}, user: {message.from_user.id}")
+    print(f"DEBUG [start]: вызван")
     
     if message.chat.type != "private":
-        print("DEBUG: чат не приватный, выхожу")
         return
     
-    print("DEBUG: чат приватный, продолжаю")
+    user_id = message.from_user.id
+    
+    # Проверка подписки
+    if not await check_subscription(user_id):
+        text = "🔑 <b>Чтобы воспользоваться ботом, необходимо присоединиться к группе</b>"
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📢 Присоединиться", url=GROUP_LINK)],
+            [InlineKeyboardButton(text="✅ Проверить", callback_data="check_subscription")]
+        ])
+        await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+        return
     
     args = message.text.split()
     
     if len(args) > 1 and args[1].startswith("deal_"):
         deal_id = args[1].split("_")[1]
-        print(f"DEBUG: обрабатываю deal_{deal_id}")
         await deal_start(message, state, deal_id)
         return
     
     if len(args) > 1 and args[1].startswith("user_"):
         target_user_id = int(args[1].split("_")[1])
-        print(f"DEBUG: обрабатываю user_{target_user_id}")
         conn = await get_conn()
         user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", target_user_id)
         await conn.close()
@@ -722,7 +706,6 @@ async def start(message: types.Message, state: FSMContext):
     
     if len(args) > 1 and args[1].startswith("rep_user_"):
         target_user_id = int(args[1].split("_")[2])
-        print(f"DEBUG: обрабатываю rep_user_{target_user_id}")
         user = await get_user_by_id(target_user_id)
         username = user["username"] if user else str(target_user_id)
         await state.update_data(target_user_id=target_user_id, target_username=username)
@@ -735,8 +718,6 @@ async def start(message: types.Message, state: FSMContext):
         await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
         return
     
-    user_id = message.from_user.id
-    username = message.from_user.username or str(user_id)
     await get_or_create_user(user_id, username)
     text = (
         "<blockquote>🛡 SHIFT | РЕПУТАЦИЯ — система репутации и доверия.\n\n"
@@ -746,7 +727,6 @@ async def start(message: types.Message, state: FSMContext):
         "Выберите действие:</blockquote>"
     )
     await message.answer(text, parse_mode="HTML", reply_markup=get_main_keyboard())
-    print("DEBUG: обычный /start обработан")
 
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
@@ -756,7 +736,27 @@ async def admin_panel(message: types.Message):
     await message.delete()
     await message.answer("<b>🤖 Админ панель открыта!</b>", parse_mode="HTML", reply_markup=get_admin_keyboard())
 
-# ========== CALLBACK QUERIES ==========
+@dp.callback_query(lambda call: call.data == "check_subscription")
+async def check_subscription_callback(call: types.CallbackQuery, state: FSMContext):
+    user_id = call.from_user.id
+    
+    if await check_subscription(user_id):
+        await call.message.delete()
+        await get_or_create_user(user_id, call.from_user.username or str(user_id))
+        text = (
+            "<blockquote>✅ Подписка подтверждена!\n\n"
+            "🛡 SHIFT | РЕПУТАЦИЯ — система репутации и доверия.\n\n"
+            "• Проверяйте репутацию пользователей\n"
+            "• Проводите безопасные сделки\n"
+            "• Пользуйтесь гарантом\n\n"
+            "Выберите действие:</blockquote>"
+        )
+        await call.message.answer(text, parse_mode="HTML", reply_markup=get_main_keyboard())
+    else:
+        await call.answer("❌ Вы не подписаны на группу! Подпишитесь и нажмите «Проверить» снова.", show_alert=True)
+    await call.answer()
+
+# ========== ОСТАЛЬНЫЕ CALLBACK-ЗАПРОСЫ ==========
 @dp.callback_query(lambda call: call.data == "profile")
 async def profile(call: types.CallbackQuery):
     user_id = call.from_user.id
@@ -957,7 +957,6 @@ async def autogarant(call: types.CallbackQuery):
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_autogarant_keyboard())
     await call.answer()
 
-# ========== МОИ СДЕЛКИ ==========
 @dp.callback_query(lambda call: call.data == "my_deals")
 async def my_deals(call: types.CallbackQuery, state: FSMContext):
     await state.clear()
@@ -1048,7 +1047,6 @@ async def my_deal_detail(call: types.CallbackQuery, state: FSMContext):
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await call.answer()
 
-# ========== СОЗДАНИЕ СДЕЛКИ ==========
 @dp.callback_query(lambda call: call.data == "create_deal")
 async def create_deal_start(call: types.CallbackQuery, state: FSMContext):
     text = (
@@ -1460,7 +1458,6 @@ async def back_to_profile(call: types.CallbackQuery, state: FSMContext):
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=True))
     await call.answer()
 
-# ========== РЕПУТАЦИЯ ==========
 @dp.callback_query(lambda call: call.data.startswith("rep_action_"))
 async def rep_action(call: types.CallbackQuery, state: FSMContext):
     target_user_id = int(call.data.split("_")[2])
@@ -1611,7 +1608,6 @@ async def back_to_user_profile(call: types.CallbackQuery, state: FSMContext):
 async def ignore(call: types.CallbackQuery):
     await call.answer()
 
-# ========== АДМИНКА ==========
 @dp.callback_query(lambda call: call.data == "admin_post")
 async def admin_post(call: types.CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
