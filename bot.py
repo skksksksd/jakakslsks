@@ -505,9 +505,13 @@ async def admin_panel(message: types.Message):
     await message.delete()
     await message.answer("<b>🤖 Админ панель открыта!</b>", parse_mode="HTML", reply_markup=get_admin_keyboard())
 
-@dp.message(lambda message: message.text and message.text.startswith("/и"))
+@dp.message()
 async def group_profile(message: types.Message):
     if message.chat.type == "private":
+        return
+    if not message.text:
+        return
+    if not message.text.startswith("/и"):
         return
     
     target_user_id = None
