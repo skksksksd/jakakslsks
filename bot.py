@@ -671,6 +671,8 @@ async def start(message: types.Message, state: FSMContext):
     print(f"DEBUG [start]: вызван")
     
     if message.chat.type != "private":
+        user_id = message.from_user.id
+username = message.from_user.username or str(user_id)
         return
     
     user_id = message.from_user.id
