@@ -5,7 +5,7 @@ import asyncpg
 import random
 import aiohttp
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -27,8 +27,7 @@ if not CRYPTO_TOKEN:
     logging.error("CRYPTO_TOKEN не задан!")
     exit(1)
 
-# ========== ФУНКЦИИ БД (В НАЧАЛЕ) ==========
-
+# ========== БД И ПУЛ ==========
 db_pool = None
 
 async def init_db_pool():
@@ -93,18 +92,6 @@ async def init_db_pool():
                 expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '5 minutes'
             )
         """)
-        
-        # Добавляем недостающие колонки если есть
-        for col in ['virtual_id', 'balance', 'deposit', 'deals_count', 'deals_sum', 'about']:
-            try:
-                await conn.execute(f"ALTER TABLE users ADD COLUMN {col} DECIMAL DEFAULT 0")
-            except Exception:
-                pass
-        
-        try:
-            await conn.execute("ALTER TABLE users ADD COLUMN username TEXT")
-        except Exception:
-            pass
 
 async def get_user_by_id(user_id: int):
     async with db_pool.acquire() as conn:
@@ -143,14 +130,6 @@ async def update_balance(user_id: int, amount: float):
 async def freeze_balance(user_id: int, amount: float):
     async with db_pool.acquire() as conn:
         await conn.execute("UPDATE users SET balance = balance - $1 WHERE user_id = $2", amount, user_id)
-
-# ========== ОСТАЛЬНЫЕ ФУНКЦИИ ==========
-
-def generate_virtual_id():
-    return random.randint(10000, 99999)
-
-def generate_deal_id():
-    return random.randint(1000, 9999)
 
 async def create_invoice(amount: float, user_id: int):
     url = "https://pay.crypt.bot/api/createInvoice"
@@ -215,13 +194,13 @@ async def create_check(amount: float):
     return None
 
 async def create_deal(creator_id: int, creator_role: str, amount: float, conditions: str):
-    deal_id = generate_deal_id()
+    deal_id = random.randint(1000, 9999)
     amount_with_fee = amount * 1.06
     amount_to_seller = amount * 0.94
     
     async with db_pool.acquire() as conn:
         while await conn.fetchval("SELECT 1 FROM deals WHERE deal_id = $1", str(deal_id)):
-            deal_id = generate_deal_id()
+            deal_id = random.randint(1000, 9999)
         
         await conn.execute(
             "INSERT INTO deals (deal_id, creator_id, creator_role, amount, amount_with_fee, amount_to_seller, conditions, status, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW() + INTERVAL '5 minutes')",
@@ -251,6 +230,141 @@ async def unfreeze_balance_to_seller(deal_id: str):
             await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", float(deal["amount_to_seller"]), deal["seller_id"])
             await conn.execute("UPDATE deals SET status = 'completed' WHERE deal_id = $1", deal_id)
 
+async def get_reviews(to_user_id: int, review_type: str = None, limit: int = 5, offset: int = 0):
+    async with db_pool.acquire() as conn:
+        if review_type:
+            rows = await conn.fetch(
+                "SELECT * FROM reviews WHERE to_user_id = $1 AND review_type = $2 ORDER BY created_at DESC LIMIT $3 OFFSET $4",
+                to_user_id, review_type, limit, offset
+            )
+            total = await conn.fetchval(
+                "SELECT COUNT(*) FROM reviews WHERE to_user_id = $1 AND review_type = $2",
+                to_user_id, review_type
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT * FROM reviews WHERE to_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+                to_user_id, limit, offset
+            )
+            total = await conn.fetchval(
+                "SELECT COUNT(*) FROM reviews WHERE to_user_id = $1",
+                to_user_id
+            )
+        return rows, total
+
+# ========== ФОРМАТТЕРЫ ==========
+def format_profile(user):
+    username = user["username"] or str(user["user_id"])
+    virtual_id = user["virtual_id"] if user["virtual_id"] else user["user_id"]
+    
+    total_reputation = user["reputation_positive"] + user["reputation_negative"]
+    positive_percent = (user["reputation_positive"] / total_reputation * 100) if total_reputation > 0 else 0
+    negative_percent = (user["reputation_negative"] / total_reputation * 100) if total_reputation > 0 else 0
+    
+    months_ru = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+    registered_date = user["registered_at"]
+    date_str = f"{registered_date.day} {months_ru[registered_date.month-1]} {registered_date.year} года"
+    
+    text = (
+        f"👤 @{username} [ ID: {virtual_id} ]\n\n"
+        f"<blockquote>• <b>Репутация</b> {total_reputation}\n"
+        f"➕ • {positive_percent:.1f}%\n"
+        f"➖ • {negative_percent:.1f}%</blockquote>\n"
+        f"<blockquote><b>Депозит:</b> 🛟 ${float(user['deposit']):.2f}</blockquote>\n"
+        f"<blockquote><b>Сделки:</b> 💰 {user['deals_count']} шт · ${float(user['deals_sum']):.2f}</blockquote>\n"
+        f"<blockquote>❗️ <b>ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</b></blockquote>\n\n"
+        f"📅 В системе с {date_str}\n"
+        f"<blockquote><b>✅ АвтоГарант — @SHIFTrepbot</b></blockquote>"
+    )
+    return text
+
+# ========== КЛАВИАТУРЫ ==========
+def get_main_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔑 Профиль", callback_data="profile", style="primary"), 
+         InlineKeyboardButton(text="🔍 Поиск", callback_data="search", style="primary")],
+        [InlineKeyboardButton(text="🔐 АвтоГарант", callback_data="autogarant", style="success")]
+    ])
+
+def get_profile_keyboard(is_own_profile=True, target_user_id=None):
+    if is_own_profile:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Кошелек", callback_data="wallet", style="primary")],
+            [InlineKeyboardButton(text="Назад", callback_data="back_to_menu", style="primary")]
+        ])
+    else:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚡️ Репутация", callback_data=f"rep_action_{target_user_id}", style="danger")],
+            [InlineKeyboardButton(text="Назад", callback_data="back_to_menu", style="primary")]
+        ])
+
+def get_autogarant_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚡️ Создать сделку", callback_data="create_deal", style="success")],
+        [InlineKeyboardButton(text="💳 Кошелек", callback_data="wallet_autogarant", style="primary"), 
+         InlineKeyboardButton(text="🔍 Мои сделки", callback_data="my_deals", style="primary")],
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_menu", style="primary")]
+    ])
+
+def get_role_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛒 Покупатель", callback_data="role_buyer", style="success"), 
+         InlineKeyboardButton(text="💼 Продавец", callback_data="role_seller", style="danger")],
+        [InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant", style="primary")]
+    ])
+
+def get_wallet_keyboard(back_callback="back_to_profile"):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Пополнить", callback_data="deposit", style="success"), 
+         InlineKeyboardButton(text="➖ Вывести", callback_data="withdraw", style="danger")],
+        [InlineKeyboardButton(text="Назад", callback_data=back_callback, style="primary")]
+    ])
+
+def get_admin_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Постинг", callback_data="admin_post", style="primary")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats", style="primary")],
+        [InlineKeyboardButton(text="🚪 Выйти", callback_data="admin_exit", style="danger")]
+    ])
+
+# ========== ПАРСЕР ОТЗЫВОВ ==========
+def parse_review_command(text: str):
+    text_lower = text.lower().strip()
+    
+    blacklist = [r'\bвыдам\b', r'\bвыдаю\b', r'\bпродам\b', r'\bпродаю\b', r'\bкуплю\b', r'\bпокупаю\b']
+    for word in blacklist:
+        if re.search(word, text_lower):
+            return None
+    
+    patterns = [
+        r'(\+реп|\-реп)\s+@?(\w+)(?:\s+(.+))?',
+        r'@?(\w+)\s+(\+реп|\-реп)(?:\s+(.+))?',
+        r'(\+реп|\-реп)\s+(\d+)(?:\s+(.+))?',
+        r'(\+rep|\-rep)\s+@?(\w+)(?:\s+(.+))?',
+        r'@?(\w+)\s+(\+rep|\-rep)(?:\s+(.+))?',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text_lower, re.IGNORECASE)
+        if match:
+            groups = match.groups()
+            if len(groups) == 3:
+                if groups[0] in ['+реп', '+rep', '-реп', '-rep']:
+                    review_type = 'positive' if groups[0] in ['+реп', '+rep'] else 'negative'
+                    target = groups[1]
+                    review_text = groups[2] if groups[2] else ''
+                elif groups[1] in ['+реп', '+rep', '-реп', '-rep']:
+                    review_type = 'positive' if groups[1] in ['+реп', '+rep'] else 'negative'
+                    target = groups[0]
+                    review_text = groups[2] if groups[2] else ''
+                else:
+                    continue
+                
+                target = target.replace('@', '')
+                return {'type': review_type, 'target': target, 'text': review_text.strip()}
+    return None
+
+# ========== ФОНОВЫЕ ЗАДАЧИ ==========
 async def check_pending_invoices():
     while True:
         try:
@@ -261,25 +375,15 @@ async def check_pending_invoices():
                 expired = await conn.fetch("SELECT * FROM invoices WHERE status = 'pending' AND expires_at <= NOW()")
                 
                 for inv in expired:
-                    await bot.send_message(
-                        inv["user_id"],
-                        f"<blockquote>❌ Счёт на пополнение истёк\n\n• Сумма: {inv['amount']:.2f} USDT</blockquote>",
-                        parse_mode="HTML"
-                    )
+                    await bot.send_message(inv["user_id"], f"<blockquote>❌ Счёт истёк\n\nСумма: {inv['amount']:.2f} USDT</blockquote>", parse_mode="HTML")
                     await conn.execute("UPDATE invoices SET status = 'expired' WHERE invoice_id = $1", inv["invoice_id"])
                 
                 for inv in pending:
                     status = await get_invoice_status(inv["invoice_id"])
                     if status == "paid":
-                        # CryptoBot уже взял комиссию, зачисляем полную сумму
                         await update_balance(inv["user_id"], float(inv["amount"]))
                         await conn.execute("UPDATE invoices SET status = 'paid' WHERE invoice_id = $1", inv["invoice_id"])
-                        
-                        await bot.send_message(
-                            inv["user_id"],
-                            f"<blockquote>✅ Пополнение на {inv['amount']:.2f} USDT успешно зачислено!</blockquote>",
-                            parse_mode="HTML"
-                        )
+                        await bot.send_message(inv["user_id"], f"<blockquote>✅ Пополнение на {inv['amount']:.2f} USDT зачислено!</blockquote>", parse_mode="HTML")
         except Exception as e:
             logging.error(f"check_pending_invoices error: {e}")
             await asyncio.sleep(5)
@@ -295,83 +399,19 @@ async def check_expired_deals():
                 
                 for deal in expired_join:
                     await conn.execute("UPDATE deals SET status = 'expired' WHERE deal_id = $1", deal["deal_id"])
-                    await bot.send_message(
-                        deal["creator_id"],
-                        f"<blockquote>❌ Сделка #{deal['deal_id']} закрыта\n\n• Партнёр не вступил в течение 5 минут</blockquote>",
-                        parse_mode="HTML"
-                    )
+                    await bot.send_message(deal["creator_id"], f"<blockquote>❌ Сделка #{deal['deal_id']} истекла</blockquote>", parse_mode="HTML")
                 
                 for deal in expired_payment:
                     await conn.execute("UPDATE deals SET status = 'payment_expired' WHERE deal_id = $1", deal["deal_id"])
                     if deal["buyer_id"]:
-                        await bot.send_message(deal["buyer_id"], f"<blockquote>❌ Сделка #{deal['deal_id']} закрыта\n\n• Оплата не поступила в течение 5 минут</blockquote>", parse_mode="HTML")
+                        await bot.send_message(deal["buyer_id"], f"<blockquote>❌ Сделка #{deal['deal_id']} истекла</blockquote>", parse_mode="HTML")
                     if deal["seller_id"]:
-                        await bot.send_message(deal["seller_id"], f"<blockquote>❌ Сделка #{deal['deal_id']} закрыта\n\n• Покупатель не оплатил в течение 5 минут</blockquote>", parse_mode="HTML")
+                        await bot.send_message(deal["seller_id"], f"<blockquote>❌ Сделка #{deal['deal_id']} истекла</blockquote>", parse_mode="HTML")
         except Exception as e:
             logging.error(f"check_expired_deals error: {e}")
             await asyncio.sleep(5)
 
-def format_profile(user):
-    username = user["username"] or str(user["user_id"])
-    virtual_id = user["virtual_id"] if user["virtual_id"] else user["user_id"]
-    
-    total_reputation = user["reputation_positive"] + user["reputation_negative"]
-    positive_percent = (user["reputation_positive"] / total_reputation * 100) if total_reputation > 0 else 0
-    negative_percent = (user["reputation_negative"] / total_reputation * 100) if total_reputation > 0 else 0
-    
-    text = (
-        f"👤 @{username} [ ID: {virtual_id} ]\n\n"
-        f"<blockquote>• <b>Репутация</b> {total_reputation}\n"
-        f"➕ • {positive_percent:.1f}%\n"
-        f"➖ • {negative_percent:.1f}%</blockquote>\n"
-        f"<blockquote><b>Депозит:</b> 🛟 ${float(user['deposit']):.2f}</blockquote>\n"
-        f"<blockquote><b>Сделки:</b> 💰 {user['deals_count']} шт · ${float(user['deals_sum']):.2f}</blockquote>\n"
-        f"<blockquote>❗️ <b>ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</b></blockquote>\n\n"
-        f"📅 В системе с {user['registered_at'].strftime('%d.%m.%Y')}\n"
-        f"<blockquote><b>✅ АвтоГарант — @SHIFTrepbot</b></blockquote>"
-    )
-    return text
-
-def get_main_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔑 Профиль", callback_data="profile"), InlineKeyboardButton(text="🔍 Поиск", callback_data="search")],
-        [InlineKeyboardButton(text="🔐 АвтоГарант", callback_data="autogarant")]
-    ])
-
-def get_profile_keyboard(is_own_profile=True, target_user_id=None):
-    if is_own_profile:
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Кошелек", callback_data="wallet")],
-            [InlineKeyboardButton(text="Назад", callback_data="back_to_menu")]
-        ])
-    else:
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⚡️ Репутация", callback_data=f"rep_action_{target_user_id}")],
-            [InlineKeyboardButton(text="Назад", callback_data="back_to_menu")]
-        ])
-
-def get_autogarant_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚡️ Создать сделку", callback_data="create_deal")],
-        [InlineKeyboardButton(text="💳 Кошелек", callback_data="wallet_autogarant"), InlineKeyboardButton(text="🔍 Мои сделки", callback_data="my_deals")],
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_menu")]
-    ])
-
-def get_role_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 Покупатель", callback_data="role_buyer"), InlineKeyboardButton(text="💼 Продавец", callback_data="role_seller")],
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant")]
-    ])
-
-def get_admin_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Постинг", callback_data="admin_post")],
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="🚪 Выйти", callback_data="admin_exit")]
-    ])
-
-# ========== КЛАССЫ СОСТОЯНИЙ ==========
-
+# ========== СОСТОЯНИЯ ==========
 class SearchStates(StatesGroup):
     waiting_search = State()
 
@@ -388,13 +428,14 @@ class DealStates(StatesGroup):
 class AdminStates(StatesGroup):
     waiting_post = State()
 
-# ========== БОТ И ДИСПЕТЧЕР ==========
+class RepStates(StatesGroup):
+    waiting_type = State()
 
+# ========== БОТ ==========
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 # ========== ОБРАБОТЧИКИ ==========
-
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext):
     if message.chat.type != "private":
@@ -418,38 +459,91 @@ async def start(message: types.Message, state: FSMContext):
     
     user_id = message.from_user.id
     username = message.from_user.username or str(user_id)
-    
     await get_or_create_user(user_id, username)
     
-    text = "<blockquote>🛡 SHIFT | РЕПУТАЦИЯ\n\nВыберите действие:</blockquote>"
-    await message.answer(text, parse_mode="HTML", reply_markup=get_main_keyboard())
+    await message.answer("<blockquote>🛡 SHIFT | РЕПУТАЦИЯ\n\nВыберите действие:</blockquote>", parse_mode="HTML", reply_markup=get_main_keyboard())
+
+@dp.message()
+async def auto_register_user(message: types.Message):
+    if message.chat.type == "private":
+        return
+    await get_or_create_user(message.from_user.id, message.from_user.username or str(message.from_user.id))
+
+@dp.message()
+async def handle_review_command(message: types.Message):
+    if not message.text:
+        return
+    
+    text_lower = message.text.lower()
+    if not any(x in text_lower for x in ['+реп', '-реп', '+rep', '-rep']):
+        return
+    
+    if not message.photo:
+        await message.answer("<blockquote>❌ Вы должны прикрепить фото к отзыву</blockquote>", parse_mode="HTML")
+        return
+    
+    parsed = parse_review_command(message.text)
+    if not parsed:
+        await message.answer("<blockquote>❌ Неверный формат\n\nПример: +реп @username текст</blockquote>", parse_mode="HTML")
+        return
+    
+    target = parsed['target']
+    review_type = parsed['type']
+    review_text = parsed['text']
+    photo_id = message.photo[-1].file_id
+    
+    from_user_id = message.from_user.id
+    
+    if target.isdigit():
+        target_user_id = int(target)
+        target_user = await get_or_create_user(target_user_id, str(target_user_id))
+    else:
+        target_user = await find_user_by_query(f"@{target}")
+        if not target_user:
+            await message.answer("<blockquote>❌ Пользователь не найден</blockquote>", parse_mode="HTML")
+            return
+        target_user_id = target_user["user_id"]
+    
+    if from_user_id == target_user_id:
+        await message.answer("<blockquote>❌ Нельзя оставить отзыв себе</blockquote>", parse_mode="HTML")
+        return
+    
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO reviews (from_user_id, to_user_id, review_type, review_text, photo_id) VALUES ($1, $2, $3, $4, $5)",
+            from_user_id, target_user_id, review_type, review_text, photo_id
+        )
+        
+        if review_type == "positive":
+            await conn.execute("UPDATE users SET reputation_positive = reputation_positive + 1 WHERE user_id = $1", target_user_id)
+        else:
+            await conn.execute("UPDATE users SET reputation_negative = reputation_negative + 1 WHERE user_id = $1", target_user_id)
+    
+    from_user = await get_user_by_id(from_user_id)
+    from_username = from_user["username"] if from_user else str(from_user_id)
+    
+    await bot.send_message(target_user_id, f"<blockquote>Вы получили {'положительный' if review_type == 'positive' else 'отрицательный'} отзыв от @{from_username}\n\n{review_text}</blockquote>", parse_mode="HTML")
+    await message.answer("<blockquote>✅ Отзыв сохранен</blockquote>", parse_mode="HTML")
 
 async def deal_start(message: types.Message, state: FSMContext, deal_id: str):
     deal = await get_deal(deal_id)
     
     if not deal or deal["status"] != "pending_join":
-        await message.answer("<blockquote>❌ Сделка не найдена или уже завершена</blockquote>", parse_mode="HTML")
+        await message.answer("<blockquote>❌ Сделка не найдена</blockquote>", parse_mode="HTML")
         return
     
     user_id = message.from_user.id
-    
     if user_id == deal["creator_id"]:
-        await message.answer("<blockquote>❌ Вы не можете присоединиться к своей сделке</blockquote>", parse_mode="HTML")
+        await message.answer("<blockquote>❌ Нельзя присоединиться к своей сделке</blockquote>", parse_mode="HTML")
         return
     
     your_role = "Продавец" if deal["creator_role"] == "buyer" else "Покупатель"
     
-    text = (
-        f"<blockquote>📩 ПРИГЛАШЕНИЕ В СДЕЛКУ #{deal_id}\n\n"
-        f"• Ваша роль: {your_role}\n"
-        f"• Сумма: {float(deal['amount']):.2f} USDT\n\n"
-        f"📝 УСЛОВИЯ:\n{deal['conditions']}\n\n"
-        f"Подтвердите участие.</blockquote>"
-    )
+    text = f"<blockquote>📩 ПРИГЛАШЕНИЕ #{deal_id}\n\nВаша роль: {your_role}\nСумма: {float(deal['amount']):.2f} USDT\n\nУсловия:\n{deal['conditions']}</blockquote>"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Принять сделку", callback_data=f"accept_deal_{deal_id}")],
-        [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_deal_{deal_id}")]
+        [InlineKeyboardButton(text="✅ Принять", callback_data=f"accept_deal_{deal_id}", style="success")],
+        [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_deal_{deal_id}", style="danger")]
     ])
     
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
@@ -460,68 +554,52 @@ async def accept_deal(call: types.CallbackQuery):
     deal = await get_deal(deal_id)
     
     if not deal or deal["status"] != "pending_join":
-        await call.answer("Сделка не найдена или уже принята", show_alert=True)
+        await call.answer("Сделка недоступна", show_alert=True)
         return
     
     joiner_id = call.from_user.id
     
     if deal["creator_role"] == "buyer":
-        buyer_id = deal["creator_id"]
-        seller_id = joiner_id
+        buyer_id, seller_id = deal["creator_id"], joiner_id
     else:
-        buyer_id = joiner_id
-        seller_id = deal["creator_id"]
+        buyer_id, seller_id = joiner_id, deal["creator_id"]
     
     await update_deal(deal_id, buyer_id, seller_id, "pending_payment")
     
-    amount = float(deal["amount"])
-    amount_with_fee = float(deal["amount_with_fee"])
-    conditions = deal["conditions"]
-    
-    invoice_url, invoice_id = await create_invoice(amount_with_fee, buyer_id)
+    invoice_url, _ = await create_invoice(float(deal["amount_with_fee"]), buyer_id)
     
     if not invoice_url:
         await call.answer("Ошибка создания счёта", show_alert=True)
         return
     
-    text = (
-        f"<blockquote>💳 ОПЛАТА ПО СДЕЛКЕ #{deal_id}\n\n"
-        f"• Сумма: {amount:.2f} USDT\n"
-        f"• К оплате: {amount_with_fee:.2f} USDT\n\n"
-        f"📝 УСЛОВИЯ:\n{conditions}</blockquote>"
-    )
-    
+    text = f"<blockquote>💳 ОПЛАТА #{deal_id}\nСумма: {float(deal['amount']):.2f} USDT\nК оплате: {float(deal['amount_with_fee']):.2f} USDT</blockquote>"
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Оплатить", url=invoice_url)],
-        [InlineKeyboardButton(text="❌ Отменить сделку", callback_data=f"cancel_deal_{deal_id}")]
+        [InlineKeyboardButton(text="💳 Оплатить", url=invoice_url, style="success")],
+        [InlineKeyboardButton(text="❌ Отменить", callback_data=f"cancel_deal_{deal_id}", style="danger")]
     ])
     
     await bot.send_message(buyer_id, text, parse_mode="HTML", reply_markup=keyboard)
-    await call.answer("Вы приняли сделку", show_alert=True)
+    await call.answer("Сделка принята", show_alert=True)
     await call.message.delete()
 
 @dp.callback_query(lambda call: call.data.startswith("reject_deal_"))
 async def reject_deal(call: types.CallbackQuery):
     deal_id = call.data.split("_")[2]
     deal = await get_deal(deal_id)
-    
     if deal and deal["status"] == "pending_join":
         await update_deal_status(deal_id, "expired")
         await bot.send_message(deal["creator_id"], f"<blockquote>❌ Сделка #{deal_id} отклонена</blockquote>", parse_mode="HTML")
-    
-    await call.answer("Вы отклонили сделку", show_alert=True)
+    await call.answer("Сделка отклонена", show_alert=True)
     await call.message.delete()
 
 @dp.callback_query(lambda call: call.data.startswith("cancel_deal_"))
 async def cancel_deal(call: types.CallbackQuery):
     deal_id = call.data.split("_")[2]
     deal = await get_deal(deal_id)
-    
     if deal and deal["status"] == "pending_payment":
         await update_deal_status(deal_id, "expired")
         if deal["seller_id"]:
             await bot.send_message(deal["seller_id"], f"<blockquote>❌ Сделка #{deal_id} отменена</blockquote>", parse_mode="HTML")
-    
     await call.answer("Сделка отменена", show_alert=True)
     await call.message.delete()
 
@@ -533,20 +611,17 @@ async def profile(call: types.CallbackQuery):
 
 @dp.callback_query(lambda call: call.data == "search")
 async def search(call: types.CallbackQuery, state: FSMContext):
-    text = "<blockquote>🔎 ПОИСК ПОЛЬЗОВАТЕЛЯ\n\nВведите @юзернейм или ID</blockquote>"
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="back_to_menu")]])
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await call.message.edit_text("<blockquote>🔎 Введите @юзернейм или ID</blockquote>", parse_mode="HTML", 
+                                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="back_to_menu", style="primary")]]))
     await state.set_state(SearchStates.waiting_search)
     await call.answer()
 
 @dp.message(SearchStates.waiting_search)
 async def process_search(message: types.Message, state: FSMContext):
     user = await find_user_by_query(message.text.strip())
-    
     if not user:
-        await message.answer("<blockquote>❌ ПОЛЬЗОВАТЕЛЬ НЕ НАЙДЕН</blockquote>", parse_mode="HTML")
+        await message.answer("<blockquote>❌ Не найден</blockquote>", parse_mode="HTML")
         return
-    
     await message.answer(format_profile(user), parse_mode="HTML", reply_markup=get_profile_keyboard(is_own_profile=False, target_user_id=user["user_id"]))
     await state.clear()
 
@@ -554,25 +629,22 @@ async def process_search(message: types.Message, state: FSMContext):
 async def wallet(call: types.CallbackQuery):
     user = await get_user_by_id(call.from_user.id)
     balance = float(user["balance"]) if user else 0
-    
-    text = f"<blockquote>💸 КОШЕЛЁК\n\nБаланс: {balance:.2f} USDT\n\nВыберите действие:</blockquote>"
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Пополнить", callback_data="deposit"), InlineKeyboardButton(text="➖ Вывести", callback_data="withdraw")],
-        [InlineKeyboardButton(text="Назад", callback_data="back_to_profile")]
-    ])
-    
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    text = f"<blockquote>💸 КОШЕЛЁК\n\nБаланс: {balance:.2f} USDT</blockquote>"
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_wallet_keyboard("back_to_profile"))
     await call.answer()
 
 @dp.callback_query(lambda call: call.data == "wallet_autogarant")
 async def wallet_autogarant(call: types.CallbackQuery):
-    await wallet(call)
+    user = await get_user_by_id(call.from_user.id)
+    balance = float(user["balance"]) if user else 0
+    text = f"<blockquote>💸 КОШЕЛЁК\n\nБаланс: {balance:.2f} USDT</blockquote>"
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_wallet_keyboard("back_to_autogarant"))
+    await call.answer()
 
 @dp.callback_query(lambda call: call.data == "deposit")
 async def deposit_start(call: types.CallbackQuery, state: FSMContext):
-    text = "<blockquote>➕ ПОПОЛНЕНИЕ\n\nВведите сумму в USDT (мин. 1 USDT)</blockquote>"
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="wallet")]])
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await call.message.edit_text("<blockquote>➕ Введите сумму USDT (мин. 1)</blockquote>", parse_mode="HTML",
+                                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="wallet", style="primary")]]))
     await state.set_state(WalletStates.waiting_deposit_amount)
     await call.answer()
 
@@ -586,31 +658,26 @@ async def deposit_amount(message: types.Message, state: FSMContext):
         await message.answer("<blockquote>❌ Введите число от 1 USDT</blockquote>", parse_mode="HTML")
         return
     
-    invoice_url, invoice_id = await create_invoice(amount, message.from_user.id)
-    
+    invoice_url, _ = await create_invoice(amount, message.from_user.id)
     if not invoice_url:
         await message.answer("<blockquote>❌ Ошибка создания счёта</blockquote>", parse_mode="HTML")
         await state.clear()
         return
     
-    text = f"<blockquote>💳 СЧЁТ НА {amount:.2f} USDT\n\nДействителен 5 минут</blockquote>"
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 Оплатить", url=invoice_url)]])
-    
-    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+    await message.answer(f"<blockquote>💳 Счёт на {amount:.2f} USDT\nДействителен 5 минут</blockquote>", parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 Оплатить", url=invoice_url, style="success")]]))
     await state.clear()
 
 @dp.callback_query(lambda call: call.data == "withdraw")
 async def withdraw_start(call: types.CallbackQuery, state: FSMContext):
     user = await get_user_by_id(call.from_user.id)
     balance = float(user["balance"]) if user else 0
-    
     if balance < 1:
         await call.answer("❌ Недостаточно средств", show_alert=True)
         return
     
-    text = f"<blockquote>➖ ВЫВОД\n\nДоступно: {balance:.2f} USDT\n\nВведите сумму:</blockquote>"
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="wallet")]])
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await call.message.edit_text(f"<blockquote>➖ Доступно: {balance:.2f} USDT\n\nВведите сумму:</blockquote>", parse_mode="HTML",
+                                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="wallet", style="primary")]]))
     await state.set_state(WalletStates.waiting_withdraw_amount)
     await call.answer()
 
@@ -628,28 +695,23 @@ async def withdraw_amount(message: types.Message, state: FSMContext):
         return
     
     check_url = await create_check(amount)
-    
     if not check_url:
         await message.answer("<blockquote>❌ Ошибка создания чека</blockquote>", parse_mode="HTML")
         await state.clear()
         return
     
     await update_balance(message.from_user.id, -amount)
-    
-    text = f"<blockquote>✅ ЧЕК НА {amount:.2f} USDT\n\n🔗 <a href='{check_url}'>Активировать</a></blockquote>"
-    await message.answer(text, parse_mode="HTML")
+    await message.answer(f"<blockquote>✅ Чек на {amount:.2f} USDT\n\n<a href='{check_url}'>Активировать</a></blockquote>", parse_mode="HTML")
     await state.clear()
 
 @dp.callback_query(lambda call: call.data == "autogarant")
 async def autogarant(call: types.CallbackQuery):
-    text = "<blockquote>⚡️ АВТОСДЕЛКИ\n\nБезопасные сделки с гарантией</blockquote>"
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_autogarant_keyboard())
+    await call.message.edit_text("<blockquote>⚡️ АВТОСДЕЛКИ\n\nБезопасные сделки с гарантией</blockquote>", parse_mode="HTML", reply_markup=get_autogarant_keyboard())
     await call.answer()
 
 @dp.callback_query(lambda call: call.data == "create_deal")
 async def create_deal_start(call: types.CallbackQuery, state: FSMContext):
-    text = "<blockquote>🛡 КЕМ ВЫСТУПАЕТЕ?</blockquote>"
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_role_keyboard())
+    await call.message.edit_text("<blockquote>🛡 КЕМ ВЫСТУПАЕТЕ?</blockquote>", parse_mode="HTML", reply_markup=get_role_keyboard())
     await state.set_state(DealStates.waiting_role)
     await call.answer()
 
@@ -657,10 +719,8 @@ async def create_deal_start(call: types.CallbackQuery, state: FSMContext):
 async def select_role(call: types.CallbackQuery, state: FSMContext):
     role = call.data.split("_")[1]
     await state.update_data(role=role)
-    
-    text = "<blockquote>💲 ВВЕДИТЕ СУММУ (мин. 1 USDT)</blockquote>"
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant")]])
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await call.message.edit_text("<blockquote>💲 ВВЕДИТЕ СУММУ (мин. 1 USDT)</blockquote>", parse_mode="HTML",
+                                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant", style="primary")]]))
     await state.set_state(DealStates.waiting_amount)
     await call.answer()
 
@@ -675,9 +735,7 @@ async def deal_amount(message: types.Message, state: FSMContext):
         return
     
     await state.update_data(amount=amount)
-    
-    text = "<blockquote>📝 ОПИШИТЕ УСЛОВИЯ СДЕЛКИ</blockquote>"
-    await message.answer(text, parse_mode="HTML")
+    await message.answer("<blockquote>📝 ОПИШИТЕ УСЛОВИЯ СДЕЛКИ</blockquote>", parse_mode="HTML")
     await state.set_state(DealStates.waiting_conditions)
 
 @dp.message(DealStates.waiting_conditions)
@@ -689,17 +747,10 @@ async def deal_conditions(message: types.Message, state: FSMContext):
     
     role_display = "Покупатель" if role == "buyer" else "Продавец"
     
-    text = (
-        f"<blockquote>🏁 ПРОВЕРЬТЕ\n\n"
-        f"Роль: {role_display}\n"
-        f"Сумма: {amount:.2f} USDT\n"
-        f"Условия: {conditions}\n\n"
-        f"Подтвердить?</blockquote>"
-    )
-    
+    text = f"<blockquote>🏁 ПРОВЕРЬТЕ\n\nРоль: {role_display}\nСумма: {amount:.2f} USDT\nУсловия: {conditions}</blockquote>"
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Подтвердить", callback_data="confirm_deal")],
-        [InlineKeyboardButton(text="❌ Отменить", callback_data="back_to_autogarant")]
+        [InlineKeyboardButton(text="✅ Подтвердить", callback_data="confirm_deal", style="success")],
+        [InlineKeyboardButton(text="❌ Отменить", callback_data="back_to_autogarant", style="danger")]
     ])
     
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
@@ -714,13 +765,10 @@ async def confirm_deal(call: types.CallbackQuery, state: FSMContext):
     conditions = data.get("conditions")
     
     deal_id = await create_deal(call.from_user.id, role, amount, conditions)
-    
     bot_username = (await bot.get_me()).username
     invite_link = f"https://t.me/{bot_username}?start=deal_{deal_id}"
     
-    text = f"<blockquote>🔗 ССЫЛКА ДЛЯ ПАРТНЁРА:\n<code>{invite_link}</code>\n\nДействительна 5 минут</blockquote>"
-    
-    await call.message.edit_text(text, parse_mode="HTML")
+    await call.message.edit_text(f"<blockquote>🔗 Ссылка для партнёра:\n<code>{invite_link}</code>\n\nДействительна 5 минут</blockquote>", parse_mode="HTML")
     await state.clear()
     await call.answer()
 
@@ -732,25 +780,17 @@ async def my_deals(call: types.CallbackQuery):
         deals = await conn.fetch("SELECT * FROM deals WHERE buyer_id = $1 OR seller_id = $1 ORDER BY created_at DESC LIMIT 10", user_id)
     
     if not deals:
-        await call.answer("У вас нет сделок", show_alert=True)
+        await call.answer("Нет сделок", show_alert=True)
         return
     
-    text = "<blockquote>📋 ВАШИ СДЕЛКИ</blockquote>"
     keyboard = []
-    
     for deal in deals:
-        status_display = {
-            "pending_join": "⏳ Ожидает",
-            "pending_payment": "💳 Ожидает оплаты",
-            "paid": "💸 Оплачено",
-            "completed": "✅ Завершена",
-        }.get(deal["status"], deal["status"])
-        
-        keyboard.append([InlineKeyboardButton(text=f"Сделка #{deal['deal_id']} — {status_display}", callback_data=f"my_deal_{deal['deal_id']}")])
+        status_display = {"pending_join": "⏳ Ожидает", "pending_payment": "💳 Ожидает оплаты", "paid": "💸 Оплачено", "completed": "✅ Завершена"}.get(deal["status"], deal["status"])
+        keyboard.append([InlineKeyboardButton(text=f"Сделка #{deal['deal_id']} — {status_display}", callback_data=f"my_deal_{deal['deal_id']}", style="primary")])
     
-    keyboard.append([InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant")])
+    keyboard.append([InlineKeyboardButton(text="Назад", callback_data="back_to_autogarant", style="primary")])
     
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await call.message.edit_text("<blockquote>📋 ВАШИ СДЕЛКИ</blockquote>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await call.answer()
 
 @dp.callback_query(lambda call: call.data.startswith("my_deal_"))
@@ -762,34 +802,132 @@ async def my_deal_detail(call: types.CallbackQuery):
         await call.answer("Сделка не найдена", show_alert=True)
         return
     
-    text = (
-        f"<blockquote>📋 СДЕЛКА #{deal_id}\n\n"
-        f"Сумма: {float(deal['amount']):.2f} USDT\n"
-        f"Статус: {deal['status']}\n"
-        f"Условия: {deal['conditions']}</blockquote>"
-    )
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="my_deals")]])
-    
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    text = f"<blockquote>📋 СДЕЛКА #{deal_id}\n\nСумма: {float(deal['amount']):.2f} USDT\nСтатус: {deal['status']}\nУсловия: {deal['conditions']}</blockquote>"
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="my_deals", style="primary")]]))
     await call.answer()
 
 @dp.callback_query(lambda call: call.data.startswith("rep_action_"))
-async def rep_action(call: types.CallbackQuery):
+async def rep_action(call: types.CallbackQuery, state: FSMContext):
     target_user_id = int(call.data.split("_")[2])
     user = await get_user_by_id(target_user_id)
     username = user["username"] if user else str(target_user_id)
     
-    text = f"<blockquote>Репутация @{username}</blockquote>"
+    await state.update_data(target_user_id=target_user_id, target_username=username)
+    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад", callback_data=f"back_to_user_profile_{target_user_id}")]
+        [InlineKeyboardButton(text="Все", callback_data=f"rep_type_all_{target_user_id}", style="primary")],
+        [InlineKeyboardButton(text="Положительные", callback_data=f"rep_type_positive_{target_user_id}", style="success"),
+         InlineKeyboardButton(text="Отрицательные", callback_data=f"rep_type_negative_{target_user_id}", style="danger")],
+        [InlineKeyboardButton(text="Назад", callback_data=f"back_to_user_profile_{target_user_id}", style="primary")]
     ])
     
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await call.message.edit_text(f"<blockquote>Какую репутацию @{username} показать?</blockquote>", parse_mode="HTML", reply_markup=keyboard)
     await call.answer()
 
+@dp.callback_query(lambda call: call.data.startswith("rep_type_"))
+async def rep_type(call: types.CallbackQuery, state: FSMContext):
+    parts = call.data.split("_")
+    review_type = parts[2] if parts[2] != "all" else None
+    target_user_id = int(parts[3])
+    
+    reviews, total = await get_reviews(target_user_id, review_type, 5, 0)
+    
+    if total == 0:
+        await call.answer("Отзывов нет", show_alert=True)
+        return
+    
+    user = await get_user_by_id(target_user_id)
+    username = user["username"] if user else str(target_user_id)
+    type_name = "Все" if review_type is None else ("Положительные" if review_type == "positive" else "Отрицательные")
+    
+    await state.update_data(current_page=0, total_reviews=total, current_type=review_type, target_user_id=target_user_id, target_username=username)
+    
+    await show_reviews_page(call, state, target_user_id, review_type, 0, username, type_name)
+
+async def show_reviews_page(call, state, target_user_id, review_type, page, username, type_name):
+    limit = 5
+    offset = page * limit
+    reviews, total = await get_reviews(target_user_id, review_type, limit, offset)
+    
+    text = f"<blockquote>🔥 Отзывы @{username} — {type_name} ({total})</blockquote>"
+    
+    keyboard = []
+    for r in reviews:
+        from_user = await get_user_by_id(r["from_user_id"])
+        from_name = from_user["username"] if from_user else str(r["from_user_id"])
+        keyboard.append([InlineKeyboardButton(text=f"👍 {from_name}" if r["review_type"] == "positive" else f"👎 {from_name}", callback_data=f"review_{r['id']}", style="primary")])
+    
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀️", callback_data=f"rep_page_{page-1}", style="primary"))
+    nav.append(InlineKeyboardButton(text=f"{page+1}/{(total+limit-1)//limit}", callback_data="ignore", style="primary"))
+    if (page + 1) * limit < total:
+        nav.append(InlineKeyboardButton(text="▶️", callback_data=f"rep_page_{page+1}", style="primary"))
+    keyboard.append(nav)
+    keyboard.append([InlineKeyboardButton(text="Назад", callback_data=f"rep_action_{target_user_id}", style="primary")])
+    
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data.startswith("rep_page_"))
+async def rep_page(call: types.CallbackQuery, state: FSMContext):
+    page = int(call.data.split("_")[2])
+    data = await state.get_data()
+    target_user_id = data.get("target_user_id")
+    review_type = data.get("current_type")
+    user = await get_user_by_id(target_user_id)
+    username = user["username"] if user else str(target_user_id)
+    type_name = "Все" if review_type is None else ("Положительные" if review_type == "positive" else "Отрицательные")
+    
+    await state.update_data(current_page=page)
+    await show_reviews_page(call, state, target_user_id, review_type, page, username, type_name)
+
+@dp.callback_query(lambda call: call.data.startswith("review_"))
+async def show_review(call: types.CallbackQuery):
+    review_id = int(call.data.split("_")[1])
+    
+    async with db_pool.acquire() as conn:
+        review = await conn.fetchrow("SELECT * FROM reviews WHERE id = $1", review_id)
+    
+    if not review:
+        await call.answer("Отзыв не найден", show_alert=True)
+        return
+    
+    from_user = await get_user_by_id(review["from_user_id"])
+    from_username = from_user["username"] if from_user else str(review["from_user_id"])
+    
+    emoji = "👍" if review["review_type"] == "positive" else "👎"
+    type_text = "Положительный" if review["review_type"] == "positive" else "Отрицательный"
+    
+    months_ru = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+    date = review["created_at"]
+    date_str = f"{date.day} {months_ru[date.month-1]} {date.year} года"
+    
+    text = f"<blockquote>{emoji} {type_text} отзыв\n\n📤 @{from_username}\n📅 {date_str}\n\n{review['review_text']}</blockquote>"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="back_to_reviews", style="primary")]])
+    
+    if review["photo_id"]:
+        await call.message.answer_photo(photo=review["photo_id"], caption=text, parse_mode="HTML", reply_markup=keyboard)
+    else:
+        await call.message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data == "back_to_reviews")
+async def back_to_reviews(call: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    target_user_id = data.get("target_user_id")
+    review_type = data.get("current_type")
+    page = data.get("current_page", 0)
+    user = await get_user_by_id(target_user_id)
+    username = user["username"] if user else str(target_user_id)
+    type_name = "Все" if review_type is None else ("Положительные" if review_type == "positive" else "Отрицательные")
+    
+    await show_reviews_page(call, state, target_user_id, review_type, page, username, type_name)
+
 @dp.callback_query(lambda call: call.data.startswith("back_to_user_profile_"))
-async def back_to_user_profile(call: types.CallbackQuery):
+async def back_to_user_profile(call: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     target_user_id = int(call.data.split("_")[4])
     user = await get_user_by_id(target_user_id)
     if user:
@@ -799,8 +937,7 @@ async def back_to_user_profile(call: types.CallbackQuery):
 @dp.callback_query(lambda call: call.data == "back_to_menu")
 async def back_to_menu(call: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    text = "<blockquote>🛡 SHIFT | РЕПУТАЦИЯ\n\nВыберите действие:</blockquote>"
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_main_keyboard())
+    await call.message.edit_text("<blockquote>🛡 SHIFT | РЕПУТАЦИЯ\n\nВыберите действие:</blockquote>", parse_mode="HTML", reply_markup=get_main_keyboard())
     await call.answer()
 
 @dp.callback_query(lambda call: call.data == "back_to_profile")
@@ -818,7 +955,6 @@ async def admin_post(call: types.CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         await call.answer("Доступ запрещен", show_alert=True)
         return
-    
     await call.message.edit_text("<b>📢 Введите текст для рассылки:</b>", parse_mode="HTML")
     await state.set_state(AdminStates.waiting_post)
     await call.answer()
@@ -833,9 +969,7 @@ async def admin_send_post(message: types.Message, state: FSMContext):
     async with db_pool.acquire() as conn:
         users = await conn.fetch("SELECT user_id FROM users")
     
-    success = 0
-    fail = 0
-    
+    success, fail = 0, 0
     await message.answer("<b>📢 Начинаю рассылку...</b>", parse_mode="HTML")
     
     for user in users:
@@ -859,9 +993,7 @@ async def admin_stats(call: types.CallbackQuery):
         total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
         total_deals = await conn.fetchval("SELECT COUNT(*) FROM deals WHERE status = 'completed'")
     
-    text = f"<b>📊 СТАТИСТИКА</b>\n\n👥 Пользователей: {total_users}\n✅ Сделок: {total_deals}"
-    
-    await call.message.edit_text(text, parse_mode="HTML")
+    await call.message.edit_text(f"<b>📊 СТАТИСТИКА</b>\n\n👥 Пользователей: {total_users}\n✅ Сделок: {total_deals}", parse_mode="HTML")
     await call.answer()
 
 @dp.callback_query(lambda call: call.data == "admin_exit")
@@ -869,7 +1001,6 @@ async def admin_exit(call: types.CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         await call.answer("Доступ запрещен", show_alert=True)
         return
-    
     await call.message.delete()
     await call.answer()
 
@@ -878,21 +1009,20 @@ async def admin_panel(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         await message.delete()
         return
-    
     await message.delete()
     await message.answer("<b>🤖 Админ панель</b>", parse_mode="HTML", reply_markup=get_admin_keyboard())
 
-# ========== ЗАПУСК ==========
+@dp.callback_query(lambda call: call.data == "ignore")
+async def ignore(call: types.CallbackQuery):
+    await call.answer()
 
+# ========== ЗАПУСК ==========
 async def main():
-    print("🚀 Запуск бота...")
-    
+    print("🚀 Запуск...")
     await init_db_pool()
-    print("✅ База данных подключена")
-    
+    print("✅ БД готова")
     asyncio.create_task(check_pending_invoices())
     asyncio.create_task(check_expired_deals())
-    
     print("✅ Бот запущен")
     await dp.start_polling(bot)
 
