@@ -7,7 +7,7 @@ import aiohttp
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, FSInputFile
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
@@ -34,6 +34,9 @@ class DealStates(StatesGroup):
     waiting_conditions = State()
     waiting_confirm = State()
     waiting_accept = State()
+
+class AdminStates(StatesGroup):
+    waiting_post = State()
 
 async def init_db():
     conn = await asyncpg.connect(DATABASE_URL)
@@ -422,6 +425,14 @@ def get_role_keyboard():
     ])
     return keyboard
 
+def get_admin_keyboard():
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Постинг", callback_data="admin_post", style="primary")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats", style="primary")],
+        [InlineKeyboardButton(text="🚪 Выйти", callback_data="admin_exit", style="danger")]
+    ])
+    return keyboard
+
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext):
     args = message.text.split()
@@ -477,6 +488,113 @@ async def deal_start(message: types.Message, state: FSMContext, deal_id: str):
     
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     await state.set_state(DealStates.waiting_accept)
+
+@dp.message(Command("admin"))
+async def admin_panel(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.delete()
+        return
+    
+    await message.delete()
+    await message.answer("<b>🤖 Админ панель открыта!</b>", parse_mode="HTML", reply_markup=get_admin_keyboard())
+
+@dp.callback_query(lambda call: call.data == "admin_post")
+async def admin_post(call: types.CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+    
+    await call.message.edit_text("<b>📢 Введите текст, фото, стикер или видео для рассылки:</b>", parse_mode="HTML")
+    await state.set_state(AdminStates.waiting_post)
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data == "admin_stats")
+async def admin_stats(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+    
+    conn = await get_conn()
+    total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
+    total_deals = await conn.fetchval("SELECT COUNT(*) FROM deals WHERE status = 'completed'")
+    total_deals_sum = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM deals WHERE status = 'completed'")
+    active_deals = await conn.fetchval("SELECT COUNT(*) FROM deals WHERE status IN ('pending_join', 'pending_payment', 'paid')")
+    disputed_deals = await conn.fetchval("SELECT COUNT(*) FROM deals WHERE status = 'disputed'")
+    await conn.close()
+    
+    total_deals_sum = float(total_deals_sum) if total_deals_sum else 0
+    
+    text = (
+        f"<b>📊 СТАТИСТИКА</b>\n\n"
+        f"👥 Пользователей: {total_users}\n"
+        f"✅ Завершённых сделок: {total_deals}\n"
+        f"💰 Объём завершённых сделок: {total_deals_sum:.2f} USDT\n"
+        f"⏳ Активных сделок: {active_deals}\n"
+        f"⚠️ Споров: {disputed_deals}"
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back", style="primary")]
+    ])
+    
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data == "admin_back")
+async def admin_back(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+    
+    await call.message.edit_text("<b>🤖 Админ панель открыта!</b>", parse_mode="HTML", reply_markup=get_admin_keyboard())
+    await call.answer()
+
+@dp.callback_query(lambda call: call.data == "admin_exit")
+async def admin_exit(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+    
+    await call.message.delete()
+    await call.answer()
+
+@dp.message(AdminStates.waiting_post)
+async def admin_send_post(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await message.delete()
+        return
+    
+    await state.clear()
+    
+    conn = await get_conn()
+    users = await conn.fetch("SELECT user_id FROM users")
+    await conn.close()
+    
+    success = 0
+    fail = 0
+    
+    await message.answer("<b>📢 Начинаю рассылку...</b>", parse_mode="HTML")
+    
+    for user in users:
+        try:
+            if message.text:
+                await bot.send_message(user["user_id"], message.text, parse_mode="HTML")
+            elif message.photo:
+                await bot.send_photo(user["user_id"], message.photo[-1].file_id, caption=message.caption, parse_mode="HTML")
+            elif message.sticker:
+                await bot.send_sticker(user["user_id"], message.sticker.file_id)
+            elif message.video:
+                await bot.send_video(user["user_id"], message.video.file_id, caption=message.caption, parse_mode="HTML")
+            elif message.document:
+                await bot.send_document(user["user_id"], message.document.file_id, caption=message.caption, parse_mode="HTML")
+            success += 1
+        except Exception:
+            fail += 1
+        
+        await asyncio.sleep(0.05)
+    
+    await message.answer(f"<b>✅ Рассылка завершена!</b>\n\n📨 Доставлено: {success}\n❌ Ошибок: {fail}", parse_mode="HTML")
+    await message.answer("<b>🤖 Админ панель открыта!</b>", parse_mode="HTML", reply_markup=get_admin_keyboard())
 
 @dp.callback_query(lambda call: call.data == "profile")
 async def profile(call: types.CallbackQuery):
