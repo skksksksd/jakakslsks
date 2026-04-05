@@ -373,7 +373,7 @@ def format_profile(user):
         f"<blockquote><b>Сделки:</b> 💰 {user['deals_count']} шт · ${float(user['deals_sum']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
         f"<blockquote>❗️ <b>ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</b></blockquote>\n\n"
         f"📅 В системе с {registered_date_ru}\n"
-        f"<blockquote><b>✅ АвтоГарант — @SHIFTrepbot</b></blockquote>"
+        f"<blockquote><b>✅ АвтоГарант — @SHIFTREPS_bot</b></blockquote>"
     )
     return text
 
@@ -518,7 +518,7 @@ async def handle_group_profile(message: types.Message):
         f"<blockquote><b>Сделки:</b> 💰 {user['deals_count']} шт · ${float(user['deals_sum']):.2f} [ ≈ 0 ₽ ]</blockquote>\n"
         f"<blockquote>❗️ <b>ВНИМАНИЕ СМОТРИТЕ ПОЛЕ «О СЕБЕ»</b></blockquote>\n\n"
         f"📅 В системе с {registered_date_ru}\n"
-        f"<blockquote><b>✅ АвтоГарант — @SHIFTrepbot</b></blockquote>"
+        f"<blockquote><b>✅ АвтоГарант — @SHIFTREPS_bot</b></blockquote>"
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
